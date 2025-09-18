@@ -3300,7 +3300,7 @@ def load_pairwise_differences_supp(modified_to_base, dataset_names="all_fmt", **
         Mapping from modified model name to baseline model name
     dataset_names : str or list
         List of dataset names to load. If string, must refer to a group of
-        datasets (e.g., all_fmt, all_ceb_closed_ended, de)
+        datasets
     **kwargs : Any
         Keyword arguments for `load_evaluated_generations`
 
@@ -3562,7 +3562,7 @@ def load_model_benchmark_social_axis(eval_config):
 
     # Only if task type is open-ended, use evaluations directory
     dir_data = config.DIR_GENERATIONS
-    is_open_ended = dataset_name in (config.CEB_OPEN_ENDED_DATASETS + config.ALL_GEN_DATASETS)
+    is_open_ended = dataset_name in (config.ALL_OPEN_DATASETS)
     # TODO: If reusing atla/prometheus, uncomment the following
     # if is_open_ended:
     #     dir_data = os.path.join(config.DIR_EVALUATIONS, eval_config["evaluator_choice"])
@@ -3942,17 +3942,13 @@ def resolve_dataset_names(name, eval_config):
         return name
 
     # Use all datasets, if not specified
-    if name == "all_ceb_close_ended":
-        return config.CEB_CLOSE_ENDED_DATASETS
-    elif name == "all_fmt":
+    if name == "all_fmt":
         # Overwrite columns/keys
         eval_config["prompt_col"] = "4-turn Conv"
         eval_config["llm_response_col"] = "4-turn Conv Response"
         return config.ALL_FMT_DATASETS
-    elif name == "all_discrim":
-        return config.ALL_DISCRIM_DATASETS
-    elif name == "all_gen":
-        return config.ALL_GEN_DATASETS
+    elif name in config.COLLECTION_TO_DATASETS:
+        return config.COLLECTION_TO_DATASETS[name]
 
     raise RuntimeError(f"Invalid dataset collection name! `{name}`")
 

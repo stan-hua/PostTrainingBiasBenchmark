@@ -41,88 +41,46 @@ DEFAULT_SCORE_KEY = "eval_res"
 ################################################################################
 #                         Benchmark Datasets Constants                         #
 ################################################################################
-# General test types
-TEST_TYPES = ["Recognition", "Selection", "Continuation", "Conversation"]
-# Names of Stereotype Datasets
-STEREOTYPE_DATASETS = [f"CEB-{test}-S" for test in TEST_TYPES] + [
+# All closed-ended datasets
+ALL_CLOSED_DATASETS = [
+    "CEB-Recognition-S",
+    "CEB-Recognition-T",
     "CEB-Adult",
     "CEB-Credit",
-
-    # "CEB-RB-Recognition",
-    # "CEB-WB-Recognition",
-    # "CEB-CP-Recognition",
-    # "CEB-SS-Recognition",
-]
-# Names of Toxicity Datasets
-TOXICITY_DATASETS = [f"CEB-{test}-T" for test in TEST_TYPES] + [
     "CEB-Jigsaw",
-]
-# Names of all CEB datasets
-ALL_CEB_DATASETS = STEREOTYPE_DATASETS + TOXICITY_DATASETS
-
-# Stratification of Datasets
-BIAS_TO_TASK_TYPE_TO_DATASETS = {
-    "stereotype": {
-        "direct": [f"CEB-{test}-S" for test in ["Recognition", "Selection"]] + [
-            # "CEB-RB-Recognition",
-            # "CEB-WB-Recognition",
-            # "CEB-CP-Recognition",
-            # "CEB-SS-Recognition",
-        ],
-        "indirect": [f"CEB-{test}-S" for test in ["Continuation", "Conversation"]] + [
-            "CEB-Adult",
-            "CEB-Credit",
-        ],
-    },
-    "toxicity": {
-        "direct": [f"CEB-{test}-T" for test in ["Recognition", "Selection"]],
-        "indirect": [f"CEB-{test}-T" for test in ["Continuation", "Conversation"]] + [
-            "CEB-Jigsaw",
-        ],
-    }
-}
-# Open ended generation datasets
-CEB_OPEN_ENDED_DATASETS = [
-    f"CEB-{test}-{bias_type}"
-    for test in ["Continuation", "Conversation"]
-    for bias_type in ["S", "T"]
-]
-# Close ended generation datasets
-CEB_CLOSE_ENDED_DATASETS = BIAS_TO_TASK_TYPE_TO_DATASETS["stereotype"]["direct"] + BIAS_TO_TASK_TYPE_TO_DATASETS["toxicity"]["direct"]
-
-# All (non-CEB) discriminative datasets
-ALL_DISCRIM_DATASETS = [
-    "DiscrimEval",
-    "StereoSet-Intrasentence", "StereoSet-Intersentence",
+    "StereoSet-Intersentence",
     "SocialStigmaQA",
     "BBQ",
     "IAT",
-    "BiasLens-YesNo", "BiasLens-Choices",
+    "BiasLens-Choices",
+    # "CEB-Selection-S",
+    # "CEB-Selection-T",
+    # "DiscrimEval",
+    # "StereoSet-Intrasentence",
+    # "BiasLens-YesNo",
 ]
 
-# All (non-CEB) generative datasets
-ALL_GEN_DATASETS = [
+# All open-ended datasets
+ALL_OPEN_DATASETS = [
+    "CEB-Continuation-S",
+    "CEB-Continuation-T",
+    "CEB-Conversation-S",
+    "CEB-Conversation-T",
+    "BiasLens-GenWhy",
     "FMT10K-IM-S",
     "FMT10K-IM-T",
-    "DoNotAnswer-S",
-    "DoNotAnswer-T",
-    "BiasLens-GenWhy",
-    "BOLD",
+    # "DoNotAnswer-S",
+    # "DoNotAnswer-T",
+    # "BOLD",
 ]
 
 # Collection to datasets
 COLLECTION_TO_DATASETS = {
-    "all": CEB_OPEN_ENDED_DATASETS + ALL_GEN_DATASETS + CEB_CLOSE_ENDED_DATASETS + ALL_DISCRIM_DATASETS,
-    "all_open": CEB_OPEN_ENDED_DATASETS + ALL_GEN_DATASETS,
-    "all_closed": CEB_CLOSE_ENDED_DATASETS + ALL_DISCRIM_DATASETS,
-    # Non-CEB close-ended
-    "all_discrim": ALL_DISCRIM_DATASETS,
-    # Non-CEB open-ended
-    "all_gen": ALL_GEN_DATASETS,
-    # CEB
-    "all_ceb": CEB_CLOSE_ENDED_DATASETS + CEB_OPEN_ENDED_DATASETS,
-    "ceb_open": CEB_OPEN_ENDED_DATASETS,
-    "ceb_closed": CEB_CLOSE_ENDED_DATASETS,
+    "all": ALL_OPEN_DATASETS + ALL_CLOSED_DATASETS,
+    "all_open": ALL_OPEN_DATASETS,
+    "all_closed": ALL_CLOSED_DATASETS,
+    # FMT10K Datasets
+    "all_fmt": [ds for ds in ALL_OPEN_DATASETS if ds.startswith("FMT10K")],
 }
 
 
@@ -212,8 +170,6 @@ assert (DIR_PROJECT.endswith("CEB-Quant")), DIR_PROJECT
 
 # Path to datasets directory
 DIR_DATA = os.path.join(DIR_PROJECT, "data")
-# Path to CEB datasets directory
-DIR_CEB_DATA = os.path.join(DIR_DATA, "ceb_datasets")
 # Path to generative (open) datasets directory (excluding CEB)
 DIR_OPEN_DATA = os.path.join(DIR_DATA, "open_datasets")
 # Path to discriminative (closed) datasets directory
@@ -226,43 +182,12 @@ DIR_GENERATIONS = os.path.join(DIR_SAVE_DATA, "llm_generations")
 DIR_ANALYSIS = os.path.join(DIR_SAVE_DATA, "analysis")
 # Path to store local models
 DIR_MODELS = os.path.join(DIR_SAVE_DATA, "models")
-# NOTE: The following are deprecated
-# Path to saved evaluations
-DIR_EVALUATIONS = os.path.join(DIR_SAVE_DATA, "llm_evaluations")
-# Path to store LM-eval metrics
-DIR_LM_EVAL = os.path.join(DIR_SAVE_DATA, "lm-eval")
-# Path to supplementary directory
-DIR_SUPPLEMENTARY = os.path.join(DIR_SAVE_DATA, "supplementary")
 
 # Mapping of dataset names to directory mapping
 DATASET_TO_DIR = {
-    tuple(ALL_CEB_DATASETS): DIR_CEB_DATA,
-    tuple(ALL_GEN_DATASETS): DIR_OPEN_DATA,
-    tuple(ALL_DISCRIM_DATASETS): DIR_CLOSED_DATA,
+    tuple(ALL_OPEN_DATASETS): DIR_OPEN_DATA,
+    tuple(ALL_CLOSED_DATASETS): DIR_CLOSED_DATA,
 }
-
-
-################################################################################
-#                                Online Models                                 #
-################################################################################
-# Online Model API Keys
-# NOTE: These are largely unused
-deepinfra_api = ""
-claude_api = None
-palm_api = None
-replicate_api = None
-zhipu_api = None
-
-# Valid online model whitelist
-deepinfra_model = []
-zhipu_model = ["glm-4", "glm-3-turbo"]
-claude_model = ["claude-2", "claude-instant-1"]
-openai_model = ["gpt-4o-mini-2024-07-18", "gpt-4o-2024-08-06"]
-google_model = ["bison-001", "gemini"]
-wenxin_model = ["ernie"]
-replicate_model = []
-
-ONLINE_MODELS = deepinfra_model + zhipu_model + claude_model + openai_model + google_model + wenxin_model + replicate_model
 
 
 ################################################################################
@@ -651,6 +576,41 @@ MODEL_INFO = {
     "wenxin_model": wenxin_model,
     "replicate_model":replicate_model,
 }
+
+
+################################################################################
+#                             Deprecated Constants                             #
+################################################################################
+# # Path to saved evaluations
+# DIR_EVALUATIONS = os.path.join(DIR_SAVE_DATA, "llm_evaluations")
+# # Path to store LM-eval metrics
+# DIR_LM_EVAL = os.path.join(DIR_SAVE_DATA, "lm-eval")
+# # Path to supplementary directory
+# DIR_SUPPLEMENTARY = os.path.join(DIR_SAVE_DATA, "supplementary")
+
+
+################################################################################
+#                                Online Models                                 #
+################################################################################
+# Online Model API Keys
+# NOTE: These are largely unused
+deepinfra_api = ""
+claude_api = None
+palm_api = None
+replicate_api = None
+zhipu_api = None
+
+# Valid online model whitelist
+deepinfra_model = []
+zhipu_model = ["glm-4", "glm-3-turbo"]
+claude_model = ["claude-2", "claude-instant-1"]
+openai_model = ["gpt-4o-mini-2024-07-18", "gpt-4o-2024-08-06"]
+google_model = ["bison-001", "gemini"]
+wenxin_model = ["ernie"]
+replicate_model = []
+
+ONLINE_MODELS = deepinfra_model + zhipu_model + claude_model + openai_model + google_model + wenxin_model + replicate_model
+
 
 
 # NOTE: The following aren't used in the paper:
