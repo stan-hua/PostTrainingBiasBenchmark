@@ -314,8 +314,8 @@ VPTQ_MODELS=(
 
 # Flag to use chat template (include both to run w/ and w/o chat template)
 CHAT_FLAGS=(
-    "False"
-    # "True"
+    # "False"
+    "True"
 )
 
 # Number of GPUS
