@@ -5,3 +5,6 @@ data/save_data
 *.pyc
 
 .envrc
+# pixi environments
+.pixi/*
+!.pixi/config.toml
