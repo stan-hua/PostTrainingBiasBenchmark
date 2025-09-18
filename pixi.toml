@@ -15,7 +15,6 @@ scikit-learn = ">=1.5.2"
 statsmodels = ">=0.14.4"
 fire = ">=0.7.0"
 auto_gptq = ">=0.7.1,<0.8"
-autoawq = ">=0.2.9,<0.3"
 
 [system-requirements]
 cuda = "12.0"
