@@ -166,10 +166,10 @@ FMT_ASSISTANT_KEY = "{turn}-turn Conv Response"
 ################################################################################
 # Directory paths
 DIR_PROJECT = os.path.dirname(__file__)
-assert (DIR_PROJECT.endswith("CEB-Quant")), DIR_PROJECT
 
 # Path to datasets directory
 DIR_DATA = os.path.join(DIR_PROJECT, "data")
+assert os.path.exists(DIR_DATA), f"config.py may not be in the main directory. It's in `{DIR_PROJECT}`"
 # Path to generative (open) datasets directory (excluding CEB)
 DIR_OPEN_DATA = os.path.join(DIR_DATA, "open_datasets")
 # Path to discriminative (closed) datasets directory
