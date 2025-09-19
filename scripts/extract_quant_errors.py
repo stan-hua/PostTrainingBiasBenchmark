@@ -38,7 +38,7 @@ assert HF_DATA_USERNAME, ("Please set HF_DATA_USERNAME environment variable "
 MODEL_PATH_TO_NAME = config.MODEL_INFO["model_path_to_name"]
 
 # Number of processes
-NUM_PROCESSES = 4
+NUM_PROCESSES = 2
 
 # Mapping of unquantized model to quantized variants
 BASE_TO_QUANTIZED = {
@@ -115,7 +115,7 @@ BASE_TO_QUANTIZED = {
 }
 
 # Save file for results
-SAVE_DIR = os.path.join(config.SAVE_DIR, "accum_quant_errors")
+SAVE_DIR = os.path.join(config.DIR_SAVE_DATA, "accum_quant_errors")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 
@@ -558,13 +558,21 @@ def analyze_model_pair(original_model_id, quantized_model_id):
         raise
 
 
-def parallel_analyze():
+def parallel_analyze(orig_models=None):
     """
     Analyze all pairs of unquantized and quantized models in parallel
+
+    Parameters
+    ----------
+    orig_models : list of str
+        List of original models to include
     """
     # Create pairs of all unquantized and quantized models
     model_pairs = []
     for orig_model, quant_models in BASE_TO_QUANTIZED.items():
+        # If specified, only filter for specific original models
+        if orig_models and orig_model not in orig_models:
+            continue
         for quant_model in quant_models:
             model_pairs.append((orig_model, quant_model))
 

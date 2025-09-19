@@ -1,11 +1,14 @@
-#!/bin/bash -l
-#SBATCH --job-name=extract_quant_errors                    # Job name
-#SBATCH --nodes=1                         # Number of nodes
-#SBATCH --cpus-per-task=8                 # Number of CPU cores per TASK
-#SBATCH --mem=8GB
-#SBATCH --tmp=8GB
-#SBATCH -o slurm/logs/audit_datasets-%j.out
-#SBATCH --time=10:00:00
+#!/bin/bash -lx
+#SBATCH --job-name=extract_qerrors                    # Job name
+#SBATCH --account=fc_chenlab
+#SBATCH --partition=savio3_bigmem
+#SBATCH --time=04:00:00
+# --nodes=1                         # Number of nodes
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2                 # Number of CPU cores per TASK
+# --mem=64GB
+# --tmp=8GB
+#SBATCH -o slurm/logs/extract_errors-%j.out
 
 # If you want to do it in the terminal,
 #--gres=gpu:NVIDIA_L40S:1                      # Request one GPU
@@ -23,14 +26,32 @@
 # # Load any necessary modules or activate your virtual environment here
 # micromamba activate fairbench
 
-# (Pixi) Load environment
-pixi shell -e ct
-
 # Configures vLLM to avoid multiprocessing issue
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
+
+# TODO: Remove
+# HuggingFace username
+export HF_DATA_USERNAME="stan-hua"
+
+# List of models
+ORIG_MODELS=(
+    # meta-llama/Llama-3.1-8B-Instruct
+    # meta-llama/Llama-3.2-1B-Instruct
+    # meta-llama/Llama-3.2-3B-Instruct
+    # mistralai/Ministral-8B-Instruct-2410
+    # Qwen/Qwen2-7B-Instruct
+    Qwen/Qwen2.5-0.5B-Instruct
+    Qwen/Qwen2.5-1.5B-Instruct
+    Qwen/Qwen2.5-3B-Instruct
+    Qwen/Qwen2.5-7B-Instruct
+    Qwen/Qwen2.5-14B-Instruct
+)
 
 
 ################################################################################
 #                                   Scripts                                    #
 ################################################################################
-python -m scripts.extract_quant_errors
+# Run in pixi environment
+pixi run -e ct \
+python -m scripts.extract_quant_errors parallel_analyze \
+    --orig_models ${ORIG_MODELS[@]}

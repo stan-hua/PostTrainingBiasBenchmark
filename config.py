@@ -13,7 +13,7 @@ import os
 MAX_WORKER_AUTOEVAL = 4
 
 # HuggingFace username where models are found
-HF_DATA_USERNAME = os.environ["HF_USERNAME_DATA"]
+HF_DATA_USERNAME = os.environ["HF_DATA_USERNAME"]
 
 # API Keys for inference / evaluation
 # NOTE: OpenAI used for generating bias scores on indirect eval.
@@ -188,6 +188,29 @@ DATASET_TO_DIR = {
     tuple(ALL_OPEN_DATASETS): DIR_OPEN_DATA,
     tuple(ALL_CLOSED_DATASETS): DIR_CLOSED_DATA,
 }
+
+
+################################################################################
+#                                Online Models                                 #
+################################################################################
+# Online Model API Keys
+# NOTE: These are largely unused
+deepinfra_api = None
+claude_api = None
+palm_api = None
+replicate_api = None
+zhipu_api = None
+
+# Valid online model whitelist
+deepinfra_model = []
+zhipu_model = ["glm-4", "glm-3-turbo"]
+claude_model = ["claude-2", "claude-instant-1"]
+openai_model = ["gpt-4o-mini-2024-07-18", "gpt-4o-2024-08-06"]
+google_model = ["bison-001", "gemini"]
+wenxin_model = ["ernie"]
+replicate_model = []
+
+ONLINE_MODELS = deepinfra_model + zhipu_model + claude_model + openai_model + google_model + wenxin_model + replicate_model
 
 
 ################################################################################
@@ -587,30 +610,6 @@ MODEL_INFO = {
 # DIR_LM_EVAL = os.path.join(DIR_SAVE_DATA, "lm-eval")
 # # Path to supplementary directory
 # DIR_SUPPLEMENTARY = os.path.join(DIR_SAVE_DATA, "supplementary")
-
-
-################################################################################
-#                                Online Models                                 #
-################################################################################
-# Online Model API Keys
-# NOTE: These are largely unused
-deepinfra_api = ""
-claude_api = None
-palm_api = None
-replicate_api = None
-zhipu_api = None
-
-# Valid online model whitelist
-deepinfra_model = []
-zhipu_model = ["glm-4", "glm-3-turbo"]
-claude_model = ["claude-2", "claude-instant-1"]
-openai_model = ["gpt-4o-mini-2024-07-18", "gpt-4o-2024-08-06"]
-google_model = ["bison-001", "gemini"]
-wenxin_model = ["ernie"]
-replicate_model = []
-
-ONLINE_MODELS = deepinfra_model + zhipu_model + claude_model + openai_model + google_model + wenxin_model + replicate_model
-
 
 
 # NOTE: The following aren't used in the paper:
