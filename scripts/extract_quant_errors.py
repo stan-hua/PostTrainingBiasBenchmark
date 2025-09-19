@@ -20,6 +20,9 @@ import torch
 import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+# Custom libraries
+import config
+
 
 ################################################################################
 #                                  Constants                                   #
@@ -35,7 +38,7 @@ assert HF_DATA_USERNAME, ("Please set HF_DATA_USERNAME environment variable "
 MODEL_PATH_TO_NAME = config.MODEL_INFO["model_path_to_name"]
 
 # Number of processes
-NUM_PROCESSES = 3
+NUM_PROCESSES = 4
 
 # Mapping of unquantized model to quantized variants
 BASE_TO_QUANTIZED = {
@@ -565,6 +568,13 @@ def parallel_analyze():
         for quant_model in quant_models:
             model_pairs.append((orig_model, quant_model))
 
+    # CASE 1: No multiprocessing
+    if NUM_PROCESSES <= 1:
+        for model_pair in model_pairs:
+            analyze_model_pair(*model_pair)
+        return
+
+    # CASE 2: Multi-processing
     # Use multiprocessing to analyze in parallel
     with Pool(processes=NUM_PROCESSES) as pool:
         pool.starmap(analyze_model_pair, model_pairs)
