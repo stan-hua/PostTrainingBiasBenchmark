@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 from fairlearn.metrics import equalized_odds_difference
 from rouge_score import rouge_scorer
+from statsmodels.stats.multitest import multipletests
 from tqdm import tqdm
 
 # Custom libraries
@@ -206,7 +207,7 @@ def estimate_num_input_tokens():
         df_accum = pd.concat([
             load_dataset(f"{name}-{suffix}") for suffix in ["S", "T"]
         ])
-        # Concatenate prompt if 
+        # Concatenate prompt if
         # Estimate each word to be 1.5 tokens
         metadata = {
             "dataset": name,
@@ -332,7 +333,7 @@ def get_huggingface_paths():
 
     # Rename SmoothQuant
     df_paths["Q Method"] = df_paths["Q Method"].map(lambda x: "SmoothQuant-RTN W4A16" if "+ SQ" in x else x)
-    
+
     # Add HuggingFace name
     df_paths["HF Path"] = df_paths["HF Path"].map(lambda x: f"{config.HF_DATA_USERNAME}/{x}" if "/" not in x else x)
 
@@ -436,7 +437,7 @@ def analyze_discrim_dataset(dataset_name="StereoSet-Intersentence", skip_plots=F
     # Print flip ratio by parameter size
     LOGGER.info(f"\n[{dataset_name}] Flipped by Model Parameter Size:")
     LOGGER.info(show_avg_by_group(df_valid, "param_size", "Flipped"))
-    
+
     # Print flip ratio by quantization strategy
     LOGGER.info(f"\n[{dataset_name}] Flipped by Quantization Strategy:")
     LOGGER.info(show_avg_by_group(df_valid, "q_method", "Flipped"))
@@ -554,39 +555,39 @@ def analyze_discrim_dataset(dataset_name="StereoSet-Intersentence", skip_plots=F
     ############################################################################
     #                            Change in Prob                                #
     ############################################################################
-    # Get probability of response chosen in the base model
-    res_prob_modified_chosen_in_base = df_valid.apply(
-        lambda row: row["res_probs_modified"][np.argmax(row["res_probs_base"])],
-        axis=1
-    )
-    
-    # Compute change in probability for the response chosen in the base
-    LOGGER.info(f"\n[{dataset_name}] Computing Change in Probability:")
-    df_valid["res_prob_chosen_base_modified_diff"] = res_prob_modified_chosen_in_base - df_valid["res_prob_chosen_base"]
+    curr_save_path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "probs_diff.csv")
+    if not os.path.exists(curr_save_path):
+        # Get probability of response chosen in the base model
+        res_prob_modified_chosen_in_base = df_valid.apply(
+            lambda row: row["res_probs_modified"][np.argmax(row["res_probs_base"])],
+            axis=1
+        )
 
-    # Compute change in probability for biased response
-    df_valid["res_prob_biased_base_modified_diff"] = df_valid["res_prob_biased_modified"] - df_valid["res_prob_biased_base"]
+        # Compute change in probability for the response chosen in the base
+        LOGGER.info(f"\n[{dataset_name}] Computing Change in Probability:")
+        df_valid["res_prob_chosen_base_modified_diff"] = res_prob_modified_chosen_in_base - df_valid["res_prob_chosen_base"]
 
-    # Add number of choices
-    df_valid["num_choices"] = df_valid["res_probs_base"].map(len)
+        # Compute change in probability for biased response
+        df_valid["res_prob_biased_base_modified_diff"] = df_valid["res_prob_biased_modified"] - df_valid["res_prob_biased_base"]
 
-    # Save change in probability for each question and model
-    cols = [
-        "idx", "model_base", "model_modified", "dataset", "social_axis",
-        "q_method_full", "Flipped", "Bias_Flipped", "is_biased_base", "is_biased_modified",
-        "num_choices", "res_probs_entropy_base", "res_probs_entropy_modified",
-        "res_prob_chosen_base", "res_prob_chosen_base_modified_diff", "res_prob_biased_base_modified_diff",
-        "res_prob_chosen_idx_base", "res_prob_chosen_idx_modified",
-    ]
-    cols = [col for col in cols if col in df_valid.columns]
-    save_path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "probs_diff.csv")
-    df_valid[cols].to_csv(save_path, index=False)
+        # Add number of choices
+        df_valid["num_choices"] = df_valid["res_probs_base"].map(len)
+
+        # Save change in probability for each question and model
+        cols = [
+            "idx", "model_base", "model_modified", "dataset", "social_axis",
+            "q_method_full", "Flipped", "Bias_Flipped", "is_biased_base", "is_biased_modified",
+            "num_choices", "res_probs_entropy_base", "res_probs_entropy_modified",
+            "res_prob_chosen_base", "res_prob_chosen_base_modified_diff", "res_prob_biased_base_modified_diff",
+            "res_prob_chosen_idx_base", "res_prob_chosen_idx_modified",
+        ]
+        cols = [col for col in cols if col in df_valid.columns]
+        df_valid[cols].to_csv(curr_save_path, index=False)
 
     ############################################################################
     #                 Bootstrap Aggregate Bias Score Diff                      #
     ############################################################################
-    # 1. Compute bootstrapped difference in aggregate bias scores
-    LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Score Difference - Unquantized vs. Quantized Model:")
+    # identify metric function
     metric_func = any_bias_score_dataset
     required_cols = [f"is_biased{s}" for s in ["_base", "_modified"]]
     if dataset_name == "BBQ":
@@ -610,53 +611,62 @@ def analyze_discrim_dataset(dataset_name="StereoSet-Intersentence", skip_plots=F
         required_cols = [f"res_probs{s}" for s in ["_base", "_modified"]]
         required_cols = required_cols + ["label", "sensitive_attr"]
 
-    # Bootstrap difference in bias scores
     # NOTE: Filter first to reduce data size when bootstrapping
     groupby_cols = ["model_base", "model_modified", "social_axis"]
     filter_cols = groupby_cols + required_cols
     df_valid_filtered = df_valid[filter_cols]
     func = partial(wrap_quantized_score_diff_dataset, func=metric_func)
-    score_diff = groupby_bootstrap_metric(df_valid[filter_cols], groupby_cols, func, parallel_groups=True)
-    df_score_diff = pd.Series(score_diff).reset_index()
-    df_score_diff.columns = ["model_base", "model_modified", "social_axis"] + ["agg_score_diff"]
 
-    # Save
-    save_path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "bootstrap-bias_score_diff-metrics.csv")
-    df_score_diff.to_csv(save_path, index=False)
+    # 1. Compute bootstrapped difference in aggregate bias scores
+    curr_save_path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "bootstrap-bias_score_diff-metrics.csv")
+    if not os.path.exists(curr_save_path):
+        LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Score Difference - Unquantized vs. Quantized Model:")
+        score_diff = groupby_bootstrap_metric(df_valid[filter_cols], groupby_cols, func, parallel_groups=True)
+        df_score_diff = pd.Series(score_diff).reset_index()
+        df_score_diff.columns = ["model_base", "model_modified", "social_axis"] + ["agg_score_diff"]
+        df_score_diff.to_csv(curr_save_path, index=False)
 
-    return
+    # 2. Permutation-based significance test
+    curr_save_path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "bootstrap-bias_score_diff-significance.csv")
+    if not os.path.exists(curr_save_path):
+        LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Score Difference - Unquantized vs. Quantized Model:")
+        df_sig = groupby_permutation_test(df_valid[filter_cols], groupby_cols, func, parallel_groups=True)
+        df_sig.to_csv(curr_save_path, index=False)
 
-    # 1. Compute metrics for biased and unbiased responses
-    LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Scores - Unquantized vs. Quantized Model:")
-    df_base = df_valid.drop_duplicates(subset=["model_base", "idx"])
-    base_cols = ["model_base", "social_axis"]
-    quantized_cols = ["model_base", "model_modified", "social_axis"]
-    shared_cols = ["model_base", "social_axis"]
-    if "is_biased_base" in df_valid.columns:
-        # 1. Native Precision LLM
-        LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Scores for Native Precision Model:")
-        unq_scores = groupby_bootstrap_metric(
-            df_base, groupby_cols, any_bias_score_dataset,
-            col_suffix="_base",
-            parallel_groups=True
-        )
-        df_unq = pd.Series(unq_scores).reset_index()
-        df_unq.columns = base_cols + ["agg_score_base"]
+    ############################################################################
+    #                   Bootstrap "Is Biased Proportion"                       #
+    ############################################################################
+    # 2. Compute metrics for biased and unbiased responses
+    # LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Scores - Unquantized vs. Quantized Model:")
+    # df_base = df_valid.drop_duplicates(subset=["model_base", "idx"])
+    # base_cols = ["model_base", "social_axis"]
+    # quantized_cols = ["model_base", "model_modified", "social_axis"]
+    # shared_cols = ["model_base", "social_axis"]
+    # if "is_biased_base" in df_valid.columns:
+    #     # 1. Native Precision LLM
+    #     LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Scores for Native Precision Model:")
+    #     unq_scores = groupby_bootstrap_metric(
+    #         df_base, groupby_cols, any_bias_score_dataset,
+    #         col_suffix="_base",
+    #         parallel_groups=True
+    #     )
+    #     df_unq = pd.Series(unq_scores).reset_index()
+    #     df_unq.columns = base_cols + ["agg_score_base"]
 
-        # 2. Quantized LLM
-        LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Scores for Quantized Model:")
-        q_scores = groupby_bootstrap_metric(
-            df_valid, groupby_cols, any_bias_score_dataset,
-            col_suffix="_modified",
-            parallel_groups=True
-        )
-        df_q = pd.Series(q_scores).reset_index()
-        df_q.columns = quantized_cols + ["agg_score_quantized"]
+    #     # 2. Quantized LLM
+    #     LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Scores for Quantized Model:")
+    #     q_scores = groupby_bootstrap_metric(
+    #         df_valid, groupby_cols, any_bias_score_dataset,
+    #         col_suffix="_modified",
+    #         parallel_groups=True
+    #     )
+    #     df_q = pd.Series(q_scores).reset_index()
+    #     df_q.columns = quantized_cols + ["agg_score_quantized"]
 
-        # Merge
-        agg_metrics_save_path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "bootstrap-is_biased-metrics.csv")
-        df_agg_metrics = df_q.merge(df_unq, how="inner", on=shared_cols)
-        df_agg_metrics.to_csv(agg_metrics_save_path, index=False)
+    #     # Merge
+    #     agg_metrics_save_path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "bootstrap-is_biased-metrics.csv")
+    #     df_agg_metrics = df_q.merge(df_unq, how="inner", on=shared_cols)
+    #     df_agg_metrics.to_csv(agg_metrics_save_path, index=False)
 
 
 def analyze_gen_dataset(dataset_name="CEB-Continuation-S"):
@@ -1062,7 +1072,7 @@ def load_sample_change_values(dataset_name):
 
 def groupby_avg(df, groupby_col, value_col="is_significant", num_round=4, **extra_metadata):
     """
-    Compute groupby-average on value column 
+    Compute groupby-average on value column
     """
     df_curr = df.groupby(groupby_col)[value_col].mean().round(num_round).reset_index()
     for k, v in extra_metadata.items():
@@ -1354,7 +1364,7 @@ def change_in_response_flipping_by_sig_bias():
                 accum_sig_probs_social_axis.append(df_probs_changed[probs_mask])
             df_curr_direction = pd.concat(accum_sig_probs_social_axis)
             # Now compute flipping on identified rows
-            curr_direction_metrics = {"dataset": renamed_dataset, "direction": direction}            
+            curr_direction_metrics = {"dataset": renamed_dataset, "direction": direction}
             curr_direction_metrics["prop_flipped_response"] = df_curr_direction["Flipped"].mean()
             curr_direction_metrics["prop_flipped_bias"] = df_curr_direction["Bias_Flipped"].mean()
             dset_direction_metrics.append(curr_direction_metrics)
@@ -2942,7 +2952,6 @@ def change_in_text_bias():
     biaslens_sample["diff_unb_to_b"] = biaslens_sample["diff_unb_to_b"].map(lambda x: MetricValue(str(x)).convert_str())
     fmt_sample[cols].to_csv(save_path_formatter.format(dataset="fmt10k"), index=False)
     biaslens_sample[cols].to_csv(save_path_formatter.format(dataset="biaslens_why"), index=False)
-
 
 
 def change_in_text_bias_fmt10k():
@@ -4589,7 +4598,7 @@ def compute_groupby_bias_flip_diff(
     df_grouped = df_grouped.merge(df_perc_res_flipped, how="inner", on=groupby_cols)
     df_perc_bias_flipped = (100 * df_data.groupby(groupby_cols)["Bias_Flipped"].mean()).reset_index(name="perc_bias_flipped")
     df_grouped = df_grouped.merge(df_perc_bias_flipped, how="inner", on=groupby_cols)
-    
+
     # Add social group counts
     if df_socialgroup is not None:
         df_grouped = df_grouped.merge(df_socialgroup, how="inner", on=[social_group_col])
@@ -4685,6 +4694,226 @@ def groupby_bootstrap_metric(df, groupby_cols, metric_func, n_iter=1000, paralle
     return final_results
 
 
+def groupby_permutation_test(
+        df, groupby_cols, metric_func, unquant_col, quant_col,
+        n_iter=1000,
+        parallel_groups=False,
+        min_n_group=10,
+        correction_method=None,
+        alpha=0.01,
+        **kwargs,
+    ):
+    """
+    Performs permutation-style bootstrap tests within each group with multiple
+    comparisons correction.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input table with unquantized and quantized model responses
+    groupby_cols : str or list of str
+        Column(s) to group the DataFrame by (e.g., question categories)
+    metric_func : Callable
+        Function that computes a metric given responses and labels
+        Should accept (responses, **kwargs) and return numeric
+    unquant_col : str
+        Column name for unquantized model responses
+    quant_col : str
+        Column name for quantized model responses
+    n_iter : int
+        Number of permutation bootstrap iterations per group
+    parallel_groups : bool
+        Whether to parallelize across groups
+    min_n_group : int
+        Minimum number of samples in a group to be considered
+    correction_method : str
+        Method for multiple comparisons correction ('fdr_bh', 'bonferroni', etc.)
+    alpha : float
+        Alpha level for multiple comparisons correction
+    **kwargs : Any
+        Additional arguments for metric_func (e.g., 'labels' column)
+
+    Returns
+    -------
+    pd.DataFrame
+        Results with columns: group, observed_diff, p_value, adjusted_p_value, significant
+    """
+    # Ensure groupby_cols is a list for consistent handling
+    if isinstance(groupby_cols, str):
+        groupby_cols = [groupby_cols]
+    grouped = df.groupby(groupby_cols)
+
+    # Collect results for all groups
+    group_results = []
+
+    # Serial processing
+    if not parallel_groups:
+        for group_name, group_df in tqdm(grouped, desc="Testing groups"):
+            # Add group information to result
+            curr_result = {}
+            for i, col in enumerate(groupby_cols):
+                curr_result[col] = group_name[i] if isinstance(group_name, (list, tuple)) else group_name
+            curr_result.update({'n_samples': len(group_df)})
+
+            # Skip very small groups
+            if len(group_df) < min_n_group: 
+                group_results.append(curr_result)
+                continue
+
+            curr_result.update(permutation_test_single_group(
+                group_df, metric_func, unquant_col, quant_col, n_iter, **kwargs
+            ))
+            group_results.append(curr_result)
+    # Parallel processing
+    else:
+        groups_list = list(grouped)
+        print(f"Parallelizing permutation tests across {len(groups_list)} groups using {NUM_WORKERS} workers...")
+
+        with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            futures = {
+                executor.submit(
+                    permutation_test_single_group,
+                    group_df, metric_func, unquant_col, quant_col, n_iter, **kwargs
+                ): group_name
+                for group_name, group_df in groups_list if len(group_df) >= min_n_group
+            }
+
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Processing groups"):
+                group_name = futures[future]
+
+                # Add group information to result
+                curr_result = {}
+                for i, col in enumerate(groupby_cols):
+                    curr_result[col] = group_name[i] if isinstance(group_name, (list, tuple)) else group_name
+                curr_result.update({'n_samples': len(group_df)})
+
+                curr_result.update(future.result())
+                group_results.append(curr_result)
+
+    if not group_results:
+        return pd.DataFrame()
+
+    # Convert to DataFrame
+    results_df = pd.DataFrame(group_results)
+
+    # If not correcting, early return
+    if correction_method is None:
+        return results_df
+
+    # Apply multiple comparisons correction
+    raw_p_values = results_df['p_value'].values
+    try:
+        reject, p_adjusted, _, _ = multipletests(raw_p_values, method=correction_method, alpha=alpha)
+        results_df['adjusted_p_value'] = p_adjusted
+        results_df['significant'] = reject
+        results_df['correction_method'] = correction_method
+        results_df['alpha'] = alpha
+
+        # print(f"\nMultiple Comparisons Summary:")
+        # print(f"Total comparisons: {len(raw_p_values)}")
+        # print(f"Raw significant (α={alpha}): {np.sum(raw_p_values < alpha)}")
+        # print(f"{correction_method.upper()} significant: {np.sum(reject)}")
+    except Exception as e:
+        warnings.warn(f"Multiple comparisons correction failed: {e}")
+        results_df['adjusted_p_value'] = raw_p_values
+        results_df['significant'] = raw_p_values < alpha
+
+    return results_df.sort_values('adjusted_p_value')
+
+
+def permutation_test_single_group(group_df, metric_func, unquant_col, quant_col, n_iter, **kwargs):
+    """
+    Perform permutation-style bootstrap test for a single group
+
+    Parameters
+    ----------
+    group_df : pd.DataFrame
+        Data for single group
+    metric_func : Callable
+        Metric function
+    unquant_col : str
+        Column with unquantized responses
+    quant_col : str
+        Column with quantized responses
+    n_iter : int
+        Number of bootstrap iterations
+    **kwargs : Any
+        Additional arguments for metric_func
+
+    Returns
+    -------
+    dict
+        Dictionary with observed_unquant, observed_quant, observed_diff, p_value
+    """
+
+    unquant_responses = group_df[unquant_col].values
+    quant_responses = group_df[quant_col].values
+
+    # Prepare kwargs for metric function (extract relevant columns)
+    metric_kwargs = {}
+    for key, value in kwargs.items():
+        if isinstance(value, str) and value in group_df.columns:
+            metric_kwargs[key] = group_df[value].values
+        else:
+            metric_kwargs[key] = value
+
+    # Compute observed metrics
+    observed_unquant = metric_func(unquant_responses, **metric_kwargs)
+    observed_quant = metric_func(quant_responses, **metric_kwargs)
+    observed_diff = observed_unquant - observed_quant
+
+    ############################################################################
+    #                      Permutation Bootstrap Test                          #
+    ############################################################################
+    null_diffs = []
+    for _ in range(n_iter):
+        # Under null: randomly swap unquant/quant responses for each sample
+        swap_mask = np.random.binomial(1, 0.5, size=len(unquant_responses)).astype(bool)
+
+        pseudo_unquant = np.where(swap_mask, quant_responses, unquant_responses)
+        pseudo_quant = np.where(swap_mask, unquant_responses, quant_responses)
+
+        # Bootstrap sample (maintain pairing)
+        boot_indices = np.random.choice(len(group_df), size=len(group_df), replace=True)
+
+        boot_pseudo_unquant = pseudo_unquant[boot_indices]
+        boot_pseudo_quant = pseudo_quant[boot_indices]
+
+        # Bootstrap kwargs
+        boot_metric_kwargs = {}
+        for key, value in metric_kwargs.items():
+            if isinstance(value, np.ndarray) and len(value) == len(group_df):
+                boot_metric_kwargs[key] = value[boot_indices]
+            else:
+                boot_metric_kwargs[key] = value
+
+        # Compute null difference
+        null_unquant = metric_func(boot_pseudo_unquant, **boot_metric_kwargs)
+        null_quant = metric_func(boot_pseudo_quant, **boot_metric_kwargs)
+        null_diffs.append(null_unquant - null_quant)
+
+    # Two-tailed p-value
+    null_diffs = np.array(null_diffs)
+    p_value = np.mean(np.abs(null_diffs) >= np.abs(observed_diff))
+    p_value = max(p_value, 1/n_iter)  # Ensure not exactly 0
+
+    ############################################################################
+    #                         Cohen's D Point Estimate                        #
+    ############################################################################
+    cohens_d = compute_cohens_d_point_estimate(
+        group_df, metric_func, unquant_col, quant_col, **kwargs
+    )
+
+    return {
+        'observed_unquant': observed_unquant,
+        'observed_quant': observed_quant,
+        'observed_diff': observed_diff,
+        'p_value': p_value,
+        'cohens_d': cohens_d,
+        'n_samples': len(group_df)
+    }
+
+
 # NOTE: This may be extremely slow on a large dataframe
 def bootstrap_metric(df, metric_func, n_iter=1000, parallel=False, as_text=True, **kwargs):
     """
@@ -4722,6 +4951,191 @@ def bootstrap_metric(df, metric_func, n_iter=1000, parallel=False, as_text=True,
         bootstrap_results = [compute_bootstrap_sample(df, metric_func, kwargs) for _ in range(n_iter)]
 
     return compute_stats_on_bootstrap_samples(bootstrap_results, as_text)
+
+
+def compute_cohens_d_point_estimate(df, metric_func, unquant_col, quant_col, **kwargs):
+    """
+    Compute Cohen's d point estimate, automatically detecting metric type.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data for single group
+    metric_func : callable
+        Metric function that takes responses and kwargs, returns float
+    unquant_col : str
+        Column name with unquantized responses
+    quant_col : str
+        Column name with quantized responses
+    **kwargs : dict
+        Additional arguments for metric_func
+        
+    Returns
+    -------
+    float
+        Cohen's d point estimate, or np.nan if cannot be computed
+    """
+    # Prepare kwargs for metric function (extract relevant columns)
+    metric_kwargs = {}
+    for key, value in kwargs.items():
+        if isinstance(value, str) and value in df.columns:
+            metric_kwargs[key] = df[value].values
+        else:
+            metric_kwargs[key] = value
+    
+    # Detect metric type by trying single-row computation
+    try:
+        single_row = df.iloc[:1]
+        single_unquant = single_row[unquant_col].values
+        single_kwargs = {}
+        for key, value in metric_kwargs.items():
+            if isinstance(value, np.ndarray) and len(value) == len(df):
+                single_kwargs[key] = value[:1]
+            else:
+                single_kwargs[key] = value
+        
+        _ = metric_func(single_unquant, **single_kwargs)
+        metric_type = "individual"
+    except:
+        metric_type = "group"
+    
+    if metric_type == "individual":
+        return compute_cohens_d_individual_direct(df, metric_func, unquant_col, quant_col, **metric_kwargs)
+    else:
+        return compute_cohens_d_group_bootstrap(df, metric_func, unquant_col, quant_col, **metric_kwargs)
+
+
+def compute_cohens_d_individual_direct(df, metric_func, unquant_col, quant_col, **metric_kwargs):
+    """
+    Compute Cohen's d for individual-level metrics using metric function directly.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data for single group
+    metric_func : callable
+        Metric function that can be computed per-question
+    unquant_col : str
+        Column name with unquantized responses
+    quant_col : str
+        Column name with quantized responses
+    **metric_kwargs : dict
+        Prepared keyword arguments for metric_func
+        
+    Returns
+    -------
+    float
+        Cohen's d point estimate, or np.nan if cannot be computed
+    """
+    try:
+        # Compute metric value for each individual question/response
+        unquant_values = []
+        quant_values = []
+        
+        for i in range(len(df)):
+            # Extract single-question data
+            single_unquant = df[unquant_col].iloc[i:i+1].values
+            single_quant = df[quant_col].iloc[i:i+1].values
+            
+            # Extract corresponding kwargs for this question
+            single_kwargs = {}
+            for key, value in metric_kwargs.items():
+                if isinstance(value, np.ndarray) and len(value) == len(df):
+                    single_kwargs[key] = value[i:i+1]
+                else:
+                    single_kwargs[key] = value
+            
+            # Compute metric for this individual question
+            unquant_metric = metric_func(single_unquant, **single_kwargs)
+            quant_metric = metric_func(single_quant, **single_kwargs)
+            
+            unquant_values.append(unquant_metric)
+            quant_values.append(quant_metric)
+        
+        unquant_values = np.array(unquant_values)
+        quant_values = np.array(quant_values)
+        
+        # Compute Cohen's d between the two sets of metric values
+        mean1, mean2 = np.mean(unquant_values), np.mean(quant_values)
+        var1, var2 = np.var(unquant_values, ddof=1), np.var(quant_values, ddof=1)
+        pooled_std = np.sqrt((var1 + var2) / 2)
+        
+        if pooled_std == 0:
+            return 0.0
+        
+        return (mean1 - mean2) / pooled_std
+        
+    except Exception:
+        return np.nan
+
+
+def compute_cohens_d_group_bootstrap(df, metric_func, unquant_col, quant_col, n_bootstrap=200, **metric_kwargs):
+    """
+    Compute Cohen's d for group-level metrics using bootstrap approach.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data for single group
+    metric_func : callable
+        Metric function that requires entire group for computation
+    unquant_col : str
+        Column name with unquantized responses
+    quant_col : str
+        Column name with quantized responses
+    n_bootstrap : int, optional
+        Number of bootstrap samples to generate, by default 200
+    **metric_kwargs : dict
+        Prepared keyword arguments for metric_func
+        
+    Returns
+    -------
+    float
+        Cohen's d point estimate, or np.nan if cannot be computed
+    """
+    unquant_metrics = []
+    quant_metrics = []
+    
+    for _ in range(n_bootstrap):
+        try:
+            # Bootstrap sample
+            boot_indices = np.random.choice(len(df), size=len(df), replace=True)
+            
+            boot_unquant_responses = df[unquant_col].iloc[boot_indices].values
+            boot_quant_responses = df[quant_col].iloc[boot_indices].values
+            
+            # Bootstrap the kwargs
+            boot_kwargs = {}
+            for key, value in metric_kwargs.items():
+                if isinstance(value, np.ndarray) and len(value) == len(df):
+                    boot_kwargs[key] = value[boot_indices]
+                else:
+                    boot_kwargs[key] = value
+            
+            # Compute group-level metrics
+            unquant_metric = metric_func(boot_unquant_responses, **boot_kwargs)
+            quant_metric = metric_func(boot_quant_responses, **boot_kwargs)
+            
+            unquant_metrics.append(unquant_metric)
+            quant_metrics.append(quant_metric)
+            
+        except Exception:
+            continue
+    
+    if len(unquant_metrics) < 50:  # Need sufficient samples
+        return np.nan
+    
+    # Cohen's d between the two bootstrap distributions
+    unquant_metrics = np.array(unquant_metrics)
+    quant_metrics = np.array(quant_metrics)
+    
+    mean_diff = np.mean(unquant_metrics) - np.mean(quant_metrics)
+    pooled_std = np.sqrt((np.var(unquant_metrics, ddof=1) + np.var(quant_metrics, ddof=1)) / 2)
+    
+    if pooled_std == 0:
+        return 0.0
+    
+    return mean_diff / pooled_std
 
 
 def compute_stats_on_bootstrap_samples(bootstrap_results, as_text=True):
@@ -4970,7 +5384,7 @@ def categorize_norm_entropy(x):
     ----------
     x : float
         Normalized entropy
-    
+
     Returns
     -------
     str
