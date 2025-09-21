@@ -629,7 +629,11 @@ def analyze_discrim_dataset(dataset_name="StereoSet-Intersentence", skip_plots=F
     curr_save_path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "bootstrap-bias_score_diff-significance.csv")
     if not os.path.exists(curr_save_path):
         LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Score Difference - Unquantized vs. Quantized Model:")
-        df_sig = groupby_permutation_test(df_valid[filter_cols], groupby_cols, func, parallel_groups=True)
+        df_sig = groupby_permutation_test(
+            df_valid[filter_cols], groupby_cols, func,
+            *[f"res_probs{s}" for s in ["_base", "_modified"]],
+            parallel_groups=True,
+        )
         df_sig.to_csv(curr_save_path, index=False)
 
     ############################################################################
@@ -4576,18 +4580,18 @@ def groupby_permutation_test(
                 executor.submit(
                     permutation_test_single_group,
                     group_df, metric_func, unquant_col, quant_col, n_iter, **kwargs
-                ): group_name
+                ): (group_name, len(group_df))
                 for group_name, group_df in groups_list if len(group_df) >= min_n_group
             }
 
             for future in tqdm(as_completed(futures), total=len(futures), desc="Processing groups"):
-                group_name = futures[future]
+                group_name, num_samples = futures[future]
 
                 # Add group information to result
                 curr_result = {}
                 for i, col in enumerate(groupby_cols):
                     curr_result[col] = group_name[i] if isinstance(group_name, (list, tuple)) else group_name
-                curr_result.update({'n_samples': len(group_df)})
+                curr_result.update({'n_samples': num_samples})
 
                 curr_result.update(future.result())
                 group_results.append(curr_result)
@@ -4596,20 +4600,20 @@ def groupby_permutation_test(
         return pd.DataFrame()
 
     # Convert to DataFrame
-    results_df = pd.DataFrame(group_results)
+    df_results = pd.DataFrame(group_results)
 
     # If not correcting, early return
     if correction_method is None:
-        return results_df
+        return df_results
 
     # Apply multiple comparisons correction
-    raw_p_values = results_df['p_value'].values
+    raw_p_values = df_results['p_value'].values
     try:
         reject, p_adjusted, _, _ = multipletests(raw_p_values, method=correction_method, alpha=alpha)
-        results_df['adjusted_p_value'] = p_adjusted
-        results_df['significant'] = reject
-        results_df['correction_method'] = correction_method
-        results_df['alpha'] = alpha
+        df_results['adjusted_p_value'] = p_adjusted
+        df_results['significant'] = reject
+        df_results['correction_method'] = correction_method
+        df_results['alpha'] = alpha
 
         # print(f"\nMultiple Comparisons Summary:")
         # print(f"Total comparisons: {len(raw_p_values)}")
@@ -4617,10 +4621,10 @@ def groupby_permutation_test(
         # print(f"{correction_method.upper()} significant: {np.sum(reject)}")
     except Exception as e:
         warnings.warn(f"Multiple comparisons correction failed: {e}")
-        results_df['adjusted_p_value'] = raw_p_values
-        results_df['significant'] = raw_p_values < alpha
+        df_results['adjusted_p_value'] = raw_p_values
+        df_results['significant'] = raw_p_values < alpha
 
-    return results_df.sort_values('adjusted_p_value')
+    return df_results.sort_values('adjusted_p_value')
 
 
 def permutation_test_single_group(group_df, metric_func, unquant_col, quant_col, n_iter, **kwargs):
