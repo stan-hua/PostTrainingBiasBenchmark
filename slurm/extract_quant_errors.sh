@@ -1,17 +1,22 @@
-#!/bin/bash -lx
+#!/bin/bash -l
 #SBATCH --job-name=extract_qerrors                    # Job name
 #SBATCH --account=fc_chenlab
-#SBATCH --partition=savio3_bigmem
+
+#SBATCH --partition=savio3_htc
+# --gres=gpu:A40:1                      # Request one GPU
+# --qos=a40_gpu3_normal
+# --partition=savio2_1080ti
+#SBATCH --qos=savio_normal
+
 #SBATCH --time=04:00:00
-# --nodes=1                         # Number of nodes
+#SBATCH --nodes=1                         # Number of nodes
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2                 # Number of CPU cores per TASK
-# --mem=64GB
+#SBATCH --cpus-per-task=8                 # Number of CPU cores per TASK
+#SBATCH --mem=64GB
 # --tmp=8GB
 #SBATCH -o slurm/logs/extract_errors-%j.out
 
 # If you want to do it in the terminal,
-#--gres=gpu:NVIDIA_L40S:1                      # Request one GPU
 # salloc --job-name=ceb --nodes=1 --gres=gpu:NVIDIA_L40S:1 --cpus-per-task=2 --mem=16G --tmp 8GB
 # srun (command)
 
@@ -35,11 +40,11 @@ export HF_DATA_USERNAME="stan-hua"
 
 # List of models
 ORIG_MODELS=(
-    # meta-llama/Llama-3.1-8B-Instruct
-    # meta-llama/Llama-3.2-1B-Instruct
-    # meta-llama/Llama-3.2-3B-Instruct
-    # mistralai/Ministral-8B-Instruct-2410
-    # Qwen/Qwen2-7B-Instruct
+    meta-llama/Llama-3.1-8B-Instruct
+    meta-llama/Llama-3.2-1B-Instruct
+    meta-llama/Llama-3.2-3B-Instruct
+    mistralai/Ministral-8B-Instruct-2410
+    Qwen/Qwen2-7B-Instruct
     Qwen/Qwen2.5-0.5B-Instruct
     Qwen/Qwen2.5-1.5B-Instruct
     Qwen/Qwen2.5-3B-Instruct
@@ -52,6 +57,8 @@ ORIG_MODELS=(
 #                                   Scripts                                    #
 ################################################################################
 # Run in pixi environment
-pixi run -e ct \
-python -m scripts.extract_quant_errors parallel_analyze \
-    --orig_models ${ORIG_MODELS[@]}
+for model in "${ORIG_MODELS[@]}"; do
+    pixi run -e ct \
+    python -m scripts.extract_quant_errors parallel_analyze \
+        --orig_models $model
+done
