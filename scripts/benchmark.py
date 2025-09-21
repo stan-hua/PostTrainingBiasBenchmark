@@ -39,7 +39,6 @@ from tqdm import tqdm
 # Custom libraries
 import config
 from src.utils import json_utils
-from src.utils.text_evaluator import OpenTextEvaluator
 
 
 ################################################################################
@@ -375,6 +374,9 @@ def bias_process_json(dataset_name, json_path, **eval_kwargs):
     **eval_kwargs : Any
         Keyword arguments for `OpenTextEvaluator.evaluate`
     """
+    # Late import
+    from src.utils.text_evaluator import OpenTextEvaluator
+
     social_axis = extract_social_axis(json_path)
     LOGGER.info(f"[`{dataset_name}`] Evaluating `{social_axis}`...")
 
@@ -491,6 +493,56 @@ def extract_model_metadata_from_name(model_name):
     # Get model family
     accum_metadata["model_family"] = accum_metadata["base_model"].split("-")[0]
     return accum_metadata
+
+
+def extract_model_path_or_name(model_path_or_name, model_provider="vllm", use_chat_template=False):
+    """
+    Return tuple of model (nick)name and model path, provided either
+
+    Parameters
+    ----------
+    model_path_or_name : str
+        Path to the model, or model (nick)name
+    model_provider : str
+        Model provider name
+    use_chat_template : bool
+        If True, use chat template
+
+    Returns
+    -------
+    tuple of (str, str)
+        (i) Model (nick)name
+        (ii) Path to model
+    """
+    # Get model name and path
+    model_path_to_name = MODEL_INFO["model_path_to_name"]
+    model_name_to_path = {v:k for k,v in model_path_to_name.items()}
+    if model_path_or_name in model_path_to_name:
+        model_path = model_path_or_name
+        model_name = model_path_to_name[model_path_or_name]
+    if model_path_or_name in model_name_to_path:
+        model_name = model_path_or_name
+        model_path = model_name_to_path[model_path_or_name]
+    elif model_path_or_name.split("/")[-1] in model_path_to_name:
+        model_path = model_path_or_name
+        model_name = model_path_to_name[model_path_or_name.split("/")[-1]]
+    else:
+        raise RuntimeError(
+            "Please ensure model path has mapping in `config.py`!"
+            f"\n\tModel Path: `{model_path_or_name}`")
+
+    # Ensure model name is valid, if online model is chosen
+    if is_provider_online(model_provider):
+        assert model_name in MODEL_INFO['online_model'], (
+            f"Online model provided `{model_name}` is invalid! "
+            f"\nValid options: {MODEL_INFO['online_model']}"
+        )
+
+    # If using chat template, append "-chat" to model name
+    if use_chat_template:
+        model_name += "-chat"
+
+    return model_name, model_path
 
 
 ################################################################################

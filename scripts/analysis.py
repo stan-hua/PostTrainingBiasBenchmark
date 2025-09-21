@@ -30,9 +30,8 @@ from tqdm import tqdm
 # Custom libraries
 import config
 from scripts import audit_datasets
-from scripts.benchmark import extract_model_metadata_from_name
+from scripts.benchmark import extract_model_metadata_from_name, extract_model_path_or_name
 from src.utils import json_utils, viz_utils
-from src.utils.llm_gen_wrapper import extract_model_path_or_name
 
 
 ################################################################################
@@ -676,212 +675,15 @@ def analyze_gen_dataset(dataset_name="CEB-Continuation-S"):
     df_valid = supp_load_pairwise_differences([dataset_name])
     LOGGER.info(f"[{dataset_name}] Loading pairwise differences...DONE")
 
-    accum_samples = []
-    for dataset_name in ["BOLD"]:
-        df_valid = supp_load_pairwise_differences([dataset_name])
-        cols = ["idx", "dataset", "social_axis", "model_base", "res_base", "probs_categorization_base"]
-        df_sample = df_valid[df_valid["res_base"].astype(bool)][cols].sample(n=10)
-        accum_samples.append(df_sample)
-
-    df_accum_samples = pd.concat(accum_samples)
-    df = pd.read_csv("open_samples.csv")
-    df_accum_samples = pd.concat([df[df["dataset"] != "BOLD"], df_sample])
-    df_accum_samples.to_csv("open_samples.csv", index=False)
-
     # Print models used
     LOGGER.info(f"\n[{dataset_name}] Models Used:")
     LOGGER.info(json.dumps(df_valid.groupby("model_base")["model_modified"].unique().map(sorted).to_dict(), indent=4))
 
-    # Identify the longest common prefix
-    df_valid["longest_common_prefix-num_words"] = compute_sentence_deviation_in_prefix_words(df_valid["res_base"], df_valid["res_modified"], "num")
-    df_valid["longest_common_prefix-prop_words"] = compute_sentence_deviation_in_prefix_words(df_valid["res_base"], df_valid["res_modified"], "prop")
+    # Identify cases where the response flipped
+    flipped_mask = df_valid["res_base"] != df_valid["res_modified"]
+    df_valid["Flipped"] = flipped_mask
+    LOGGER.info(f"\n[{dataset_name}] Perc. of Responses Flipped: {prop_to_perc(flipped_mask.mean())}")
 
-    # Plot proportion of words until token flips
-    x_95th = df_valid["longest_common_prefix-prop_words"].quantile(0.95)
-    viz_utils.set_theme(tick_scale=3, figsize=(15, 10))
-    viz_utils.catplot(
-        df_valid,
-        plot_type="hist", stat="percent", bins=20, common_norm=False,
-        x="longest_common_prefix-prop_words",
-        xlabel="Prop. Words Until Token Flips",
-        ylabel="Percentage of Responses",
-        x_lim=(0, 1),
-        vertical_lines=[x_95th],
-        title=None,
-        save_dir=os.path.join(config.DIR_ANALYSIS, f"{dataset_name}"),
-        save_fname=f"{dataset_name}-prop_words_till_token_flip.svg"
-    )
-
-    # Identify cases where the safety flipped
-    df_valid["flipped-safety"] = df_valid["eval_llama-is_safe_base"] != df_valid["eval_llama-is_safe_modified"]
-    df_valid["flipped-hate"] = df_valid["eval_llama-is_hate_base"] != df_valid["eval_llama-is_hate_modified"]
-
-    # Identify harmful cases (when response category = 5)
-    df_valid["is_harmful_base"] = df_valid["probs_categorization_base"].map(np.argmax) == 5
-    df_valid["is_harmful_modified"] = df_valid["probs_categorization_modified"].map(np.argmax) == 5
-    df_valid["flipped-harmful_response"] = df_valid["is_harmful_base"] != df_valid["is_harmful_modified"]
-
-    print(df_valid.groupby(["q_method_full"])["flipped-harmful_response"].mean())
-
-    mask = (df_valid["q_method_full"] == "RTN W4A16") & (df_valid["model_base"] == "qwen2.5-7b-instruct") & df_valid["flipped-harmful_response"]
-
-    # TODO: What is the probability when selecting the harmful categorization
-    # a = df_valid.loc[~df_valid["is_harmful_base"], "probs_categorization_base"].map(max)
-    # a = df_valid.loc[~df_valid["is_harmful_modified"], "probs_categorization_modified"].map(max)
-
-    # a = df_valid.loc[df_valid["is_harmful_base"], "probs_categorization_base"].map(compute_entropy)
-    # a = df_valid.loc[df_valid["is_harmful_modified"], "probs_categorization_modified"].map(compute_entropy)
-
-    # a = df_valid["probs_categorization_modified"].map(compute_entropy)
-    # pd.cut(a, bins=8).value_counts(normalize=True)
-
-    # df_curr = df_valid[mask].copy()
-    # # Format base/quantized responses as choices
-    # df_curr["choices"] = df_curr.apply(
-    #     lambda row: [row["res_base"], row["res_modified"]],
-    #     axis=1,
-    # )
-    # # Add model labels
-    # df_curr["model_label"] = df_curr.apply(
-    #     lambda row: [row["model_base"], row["model_modified"]],
-    #     axis=1,
-    # )
-    # # Add quantization label
-    # df_curr["quant_label"] = df_curr.apply(
-    #     lambda row: ["Base", row["q_method_full"]],
-    #     axis=1,
-    # )
-    # # Add harmful labels
-    # df_curr["is_harmful_label"] = df_curr.apply(
-    #     lambda row: [row["is_harmful_base"], row["is_harmful_modified"]],
-    #     axis=1,
-    # )
-    # # Response categorization labels
-    # df_curr["category_label"] = df_curr.apply(
-    #     lambda row: [
-    #         np.argmax(row["probs_categorization_base"]),
-    #         np.argmax(row["probs_categorization_modified"]),
-    #     ],
-    #     axis=1,
-    # )
-    # df_curr["category_label_probs"] = df_curr.apply(
-    #     lambda row: [
-    #         np.max(row["probs_categorization_base"]),
-    #         np.max(row["probs_categorization_modified"]),
-    #     ],
-    #     axis=1,
-    # )
-    # cols = [
-    #     "idx", 'dataset', "axis", "prompt", 'descriptor', "choices",
-    #     "model_label", "quant_label",
-    #     "is_harmful_label", "category_label", "category_label_probs",
-    # ]
-    # # TODO: After identifying a threshold on the response categorization (i.e., meaningful changes)
-    # # TODO: Then create preference dataset and evaluate on the model (and its quantized versions) selected
-    # data = df_curr[cols].to_dict(orient="records")
-
-
-    # Plot change in hate
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    # TODO: Update heatmap parameters with `transition_kwargs`
-    viz_utils.catplot(
-        df_valid,
-        plot_type="heatmap",
-        transition_kwargs={
-            "stat": "proportion",
-            "y": "eval_llama-is_hate_base",
-            "x": "eval_llama-is_hate_modified",
-            "order": [True, False],
-        },
-        xlabel="Quantized Model",
-        ylabel="Unquantized Model",
-        title="(%) Change in Response Safety (Hate)",
-        legend=False,
-        save_dir=os.path.join(config.DIR_ANALYSIS, f"{dataset_name}"),
-        save_fname=f"{dataset_name}-safety_hate_flipping-heatmap.svg"
-    )
-
-    # Identify response category
-    for suffix in ["_base", "_modified"]:
-        df_valid[f"action_category{suffix}"] = df_valid[f"probs_categorization{suffix}"].map(np.argmax)
-
-    # Plot change in categorization
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    viz_utils.catplot(
-        df_valid,
-        plot_type="heatmap",
-        transition_kwargs={
-            "stat": "proportion",
-            "y": "action_category_base",
-            "x": "action_category_modified",
-            "order": list(range(6))[::-1],
-        },
-        xlabel="Quantized Model",
-        ylabel="Unquantized Model",
-        title="(%) Change in Response Category",
-        legend=False,
-        save_dir=os.path.join(config.DIR_ANALYSIS, f"{dataset_name}"),
-        save_fname=f"{dataset_name}-response_category_flipping-heatmap.svg"
-    )
-
-    # Compute difference before and after quantization
-    metric_cols = [
-        "prop_non_english",
-        "prob_gibberish",
-        "prob_relevance",
-        "prob_refusal",
-        "sentiment",
-        "toxicity",
-        "gender_polarity-diff",
-        "lt-error_count",
-        "max_1gram_rep",
-        "max_3gram_rep",
-        "max_5gram_rep",
-    ]
-    for metric_col in metric_cols:
-        diff = df_valid[f"{metric_col}_modified"] - df_valid[f"{metric_col}_base"]
-        diff_count = diff.round(1).value_counts(normalize=True).sort_index().round(2)
-        LOGGER.info(f"\n[{dataset_name}] Quantization Impact on `{metric_col}`:")
-        print(diff_count)
-        save_path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", metric_col, "diff.csv")
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        diff_count.to_csv(save_path)
-
-    # Plot histogram of responses before and after quantization
-    df_base = df_valid.drop_duplicates(subset=["model_base", "idx"])
-    df_base["q_method_bits"] = "Native"
-    for metric_col in metric_cols:
-        df_curr_base = df_base[[f"{metric_col}_base", "q_method_bits"]]
-        df_curr_modified = df_valid[[f"{metric_col}_modified", "q_method_bits"]]
-        df_curr_base.columns = [metric_col, "q_method_bits"]
-        df_curr_modified.columns = [metric_col, "q_method_bits"]
-        df_curr = pd.concat([df_curr_base, df_curr_modified], ignore_index=True)
-
-        # Set x-axis limits
-        x_lim = (0, 1)
-        if df_curr[metric_col].min() < 0:
-            x_lim = (-1, 1)
-        elif df_curr[metric_col].max() > 1:
-            x_lim = (0, df_curr[metric_col].max())
-
-        # Extract base responses and quantized responses
-        viz_utils.set_theme(tick_scale=3, figsize=(15, 10))
-        viz_utils.catplot(
-            df_curr,
-            plot_type="hist", stat="percent", bins=20, common_norm=False,
-            x=metric_col,
-            hue="q_method_bits",
-            xlabel=f"Metric: `{metric_col}`",
-            ylabel="Percentage of Responses",
-            x_lim=x_lim,
-            title=None,
-            legend=True,
-            save_dir=os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", metric_col),
-            save_fname=f"{dataset_name}-dataset_level-{metric_col}-histogram.svg"
-        )
-
-    # TODO: Can certain metrics explain safe vs. unsafe responses
-    # TODO: Consider a mixed effects or regression model
 
 
 # Additional Supplementary

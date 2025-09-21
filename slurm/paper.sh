@@ -1,12 +1,16 @@
 #!/bin/bash -l
 #SBATCH --job-name=paper                    # Job name
-# --gres=gpu:NVIDIA_L40S:1
+#SBATCH --account=fc_chenlab
+#SBATCH --partition=savio2
+#SBATCH --qos=savio_normal
+#SBATCH --time=08:00:00
 #SBATCH --nodes=1                         # Number of nodes
-#SBATCH --cpus-per-task=64                 # Number of CPU cores per TASK
-#SBATCH --mem=64GB
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=24                 # Number of CPU cores per TASK
+
+# --gres=gpu:NVIDIA_L40S:1
+#SBATCH --mem=32GB
 #SBATCH -o slurm/logs/slurm-paper-%j.out
-#SBATCH --time=24:00:00
-# --begin=now+10minutes
 
 # If you want to do it in the terminal,
 # salloc --nodes=1 --cpus-per-task=8 --mem=16G
@@ -16,7 +20,7 @@
 #                                 Environment                                  #
 ################################################################################
 # Load any necessary modules or activate your virtual environment here
-micromamba activate fairbench
+# micromamba activate fairbench
 
 # Configures vLLM to avoid multiprocessing issue
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
@@ -31,26 +35,31 @@ echo $port
 export SYSTEM_PROMPT_TYPE="no_sys_prompt"
 
 
+# TODO: Remove
+# HuggingFace username
+export HF_DATA_USERNAME="stan-hua"
+
 ################################################################################
 #                          Discriminative Evaluation                           #
 ################################################################################
 DISCRIM_DATASET_NAMES=(
-    # "CEB-Recognition-S"
-    # "CEB-Recognition-T"
-    # "CEB-Adult"
-    # "CEB-Credit"
-    # "CEB-Jigsaw"
-    # "BBQ"
-    # "BiasLens-Choices"
+    "CEB-Recognition-S"
+    "CEB-Recognition-T"
+    "CEB-Adult"
+    "CEB-Credit"
+    "CEB-Jigsaw"
+    "BBQ"
+    "BiasLens-Choices"
     # "BiasLens-YesNo"
-    # "IAT"
-    # "SocialStigmaQA"
-    # "StereoSet-Intersentence"
+    "IAT"
+    "SocialStigmaQA"
+    "StereoSet-Intersentence"
     # "StereoSet-Intrasentence"
 )
 
 for DATASET_NAME in "${DISCRIM_DATASET_NAMES[@]}"; do
-    srun python -m scripts.analysis analyze_discrim_dataset $DATASET_NAME;
+    pixi run -e ct \
+        python -m scripts.analysis analyze_discrim_dataset $DATASET_NAME;
 done
 
 
@@ -74,7 +83,8 @@ GEN_DATASET_NAMES=(
 )
 
 for DATASET_NAME in "${GEN_DATASET_NAMES[@]}"; do
-    srun python -m scripts.analysis analyze_gen_dataset $DATASET_NAME;
+    pixi run -e ct \
+        python -m scripts.analysis analyze_gen_dataset $DATASET_NAME;
 done
 
 
@@ -111,4 +121,4 @@ done
 
 # # Supp. Table.
 # srun python -m scripts.analysis change_in_text_bias_fmt10k
-srun python -m scripts.analysis change_in_text_bias_biaslens
+# srun python -m scripts.analysis change_in_text_bias_biaslens
