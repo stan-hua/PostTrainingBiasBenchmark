@@ -8,8 +8,6 @@ version = "0.1.0"
 
 [dependencies]
 python = "==3.11"
-pytorch = "==2.6.0"
-transformers = ">=4.51.0,<4.54.0"
 scikit-learn = ">=1.5.2"
 statsmodels = ">=0.14.4"
 fire = ">=0.7.0"
@@ -29,18 +27,31 @@ huggingface-hub = "*"
 arch = ">=7.2.0, <8"
 fastchat = ">=0.1.0, <0.2"
 
-[feature.analysis.dependencies]
+[feature.analysis.pypi-dependencies]
 compressed-tensors = ">=0.11.0"
 
-[feature.vllm.dependencies]
-vllm = ">=0.6.2"
+[feature.vllm.pypi-dependencies]
+vllm = "==0.8.3"
 compressed-tensors = ">=0.9.2"
 
-[feature.quant.dependencies]
+[feature.vllm.pypi-options.dependency-overrides]
+numpy = "==2.1.*"
+
+[feature.quant.pypi-dependencies]
+torch = "==2.6.0"
+torchvision = "==0.21.0"
+transformers = ">=4.51.0,<4.54.0"
 accelerate = ">0.34.2"
 auto_gptq = ">=0.7.1,<0.8"
 autoawq = ">=0.2.9,<0.3"
 optimum = ">=1.27.0,<2"
+
+[feature.quant.pypi-options]
+index-url = "https://pypi.org/simple"
+extra-index-urls = [
+    "https://download.pytorch.org/whl/cu124",
+    "https://pypi.org/simple",
+]
 
 [feature.cuda.dependencies]
 cuda-version = "12.*"
