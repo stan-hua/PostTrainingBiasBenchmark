@@ -98,6 +98,32 @@ NON_SHARED_COLS = [
 # List of required evaluation columns for each open-ended generation
 OPEN_ENDED_REQUIRED_COLS = ["probs_categorization", "toxicity", "lt-error_count", "max_1gram_rep"]
 
+# Dataset name mapping to join datasets
+RENAME_DATASET = {
+    # Closed-Ended Datasets
+    "CEB-Recognition-S": "CEB-Recognition",
+    "CEB-Recognition-T": "CEB-Recognition",
+    "CEB-Jigsaw": "Jigsaw",
+    "CEB-Adult": "Adult",
+    "CEB-Credit": "Credit",
+    "StereoSet-Intersentence": "StereoSet",
+    "BiasLens-Choices": "BiasLens",
+
+    # Open-Ended Datasets
+    "CEB-Continuation-S": "CEB-Continuation",
+    "CEB-Continuation-T": "CEB-Continuation",
+    "CEB-Conversation-S": "CEB-Conversation",
+    "CEB-Conversation-T": "CEB-Conversation",
+    "FMT10K-IM-S": "FMT10K",
+    "FMT10K-IM-T": "FMT10K",
+    "BiasLens-GenWhy": "BiasLens",
+}
+
+# Datasets to evaluate
+ALL_CLOSED_DATASETS = config.ALL_CLOSED_DATASETS
+ALL_OPEN_DATASETS = config.ALL_OPEN_DATASETS
+
+
 # Simple function filter out model based on quantization in name
 def filter_quant(name, keep_w8a8=False):
     should_remove = any([
@@ -683,7 +709,7 @@ def analyze_open_dataset(dataset_name="CEB-Continuation"):
     LOGGER.info(f"[{dataset_name}] Beginning analysis!")
 
     LOGGER.info(f"[{dataset_name}] Loading...")
-    df_valid = load_open_sample_change_values(dataset_name)
+    df_valid = load_open_dataset_cached_indiv_metrics(dataset_name)
     LOGGER.info(f"[{dataset_name}] Loading...DONE")
 
     # Print models used
@@ -792,9 +818,9 @@ def analyze_de():
 ################################################################################
 #                                   Results                                    #
 ################################################################################
-def load_dataset_agg_metrics(dataset_name, keep_w8a8=False):
+def load_closed_dataset_cached_agg_metrics(dataset_name, keep_w8a8=False):
     """
-    Load aggregated bias metrics for a dataset
+    Load cached aggregated bias metrics and significance tests for a dataset
 
     Parameters
     ----------
@@ -805,65 +831,90 @@ def load_dataset_agg_metrics(dataset_name, keep_w8a8=False):
     if dataset_name == "CEB-Recognition":
         accum_data = []
         for name in ["CEB-Recognition-T", "CEB-Recognition-S"]:
-            accum_data.append(load_dataset_agg_metrics(name))
+            accum_data.append(load_closed_dataset_cached_agg_metrics(name))
         df_data = pd.concat(accum_data).reset_index(drop=True)
         return df_data
 
-    path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "bootstrap-bias_score_diff-metrics.csv")
-    df_data = pd.read_csv(path)
+    # Load bootstrapped difference in agg bias scores
+    df_diffs = pd.read_csv(os.path.join(
+        config.DIR_ANALYSIS, f"{dataset_name}",
+        "bootstrap-bias_score_diff-metrics.csv")
+    )
+
+    # Load permutation test results
+    df_sig_test = pd.read_csv(os.path.join(
+        config.DIR_ANALYSIS, f"{dataset_name}",
+        "bootstrap-bias_score_diff-significance.csv")
+    )
+
+    # Merge tables
+    df_data = pd.merge(
+        df_data, df_sig_test,
+        on=["model_base", "model_modified", "social_axis"],
+        how="inner",
+    )
+
+    # Log missing number of rows
+    total_size = max(len(df_diffs), len(df_sig_test))
+    if len(df_data) < total_size:
+        LOGGER.info(f"[{dataset_name}] Missing rows in agg metrics or significance test!")
+        curr_size = len(df_data)
+        LOGGER.info(f"\tCurrent: {len(df_data)} | Total: {total_size}")
+
     # Rename dataset
-    rename_dataset = {
-        "CEB-Recognition-S": "CEB-Recognition",
-        "CEB-Recognition-T": "CEB-Recognition",
-        "CEB-Jigsaw": "Jigsaw",
-        "CEB-Adult": "Adult",
-        "CEB-Credit": "Credit",
-        "StereoSet-Intersentence": "StereoSet",
-        "BiasLens-Choices": "BiasLens",
-    }
-    df_data["dataset"] = rename_dataset.get(dataset_name, dataset_name)
+    df_data["dataset"] = RENAME_DATASET.get(dataset_name, dataset_name)
+
     # Filter for base models
     df_data = df_data[df_data["model_base"].isin(KEEP_BASE_MODELS)]
+
     # Filter from quantized model
     df_data = df_data[~df_data["model_modified"].map(lambda x: filter_quant(x, keep_w8a8=keep_w8a8))]
+
     # If BBQ dataset, load the ambiguous scores
     if dataset_name == "BBQ":
         LOGGER.info("Filtering BBQ for ambiguous context...")
         df_data["agg_score_diff"] = df_data["agg_score_diff"].map(
             lambda x: ast.literal_eval(x)[1]
         )
+
     # Get significant differences
     df_data["agg_score_diff"] = df_data["agg_score_diff"].map(MetricValue)
-    df_data["is_significant"] = df_data["agg_score_diff"].map(lambda x: 0 not in x)
-    # Directionality if it's significant
-    df_data["significant_direction"] = None
-    mask = df_data["is_significant"]
-    df_data.loc[mask, "significant_direction"] = df_data.loc[mask, "agg_score_diff"].map(
-        lambda x: "more biased" if x.lower_5th > 0 else "less biased"
-    )
+    # df_data["is_significant"] = df_data["agg_score_diff"].map(lambda x: 0 not in x)
+
+    # # Directionality if it's significant
+    # df_data["significant_direction"] = None
+    # mask = df_data["is_significant"]
+    # df_data.loc[mask, "significant_direction"] = df_data.loc[mask, "agg_score_diff"].map(
+    #     lambda x: "more biased" if x.lower_5th > 0 else "less biased"
+    # )
+
     # Add model metadata
     model_metadata = pd.DataFrame(df_data["model_modified"].map(extract_model_metadata_from_name).tolist())
     df_data = pd.concat([df_data.reset_index(drop=True), model_metadata], axis=1)
-    # TODO: Remove after fixing bug
-    assert (df_data["model_base"] == df_data["base_model"]).all()
+
     return df_data
 
 
-def load_sample_change_values(dataset_name):
+def load_closed_dataset_entropy_changes(dataset_name):
+    """
+    Compute normalized entropy for a closed-ended dataset
+    """
     # CASE 1: "CEB-Recognition" loads both stereotyping and toxicity
     if dataset_name == "CEB-Recognition":
         accum_data = []
         for name in ["CEB-Recognition-T", "CEB-Recognition-S"]:
-            accum_data.append(load_sample_change_values(name))
+            accum_data.append(load_closed_dataset_entropy_changes(name))
         df_data = pd.concat(accum_data).reset_index(drop=True)
         return df_data
 
     # CASE 2: Single dataset
     path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "probs_diff.csv")
     df_data = pd.read_csv(path)
+
     # Filter models
     df_data = df_data[df_data["model_base"].isin(KEEP_BASE_MODELS)]
     df_data = df_data[~df_data["model_modified"].map(filter_quant)]
+
     # If BBQ, filter for ambiguous context
     if dataset_name == "BBQ":
         LOGGER.info("Filtering BBQ for ambiguous context...")
@@ -874,17 +925,10 @@ def load_sample_change_values(dataset_name):
         # Filter for ambiguous context
         df_data = df_data[df_data["context_condition"] == "ambig"]
     assert not df_data.empty, f"[Load Prob Changes] Data for `{dataset_name}` is empty!"
+
     # Rename dataset
-    rename_dataset = {
-        "CEB-Recognition-S": "CEB-Recognition",
-        "CEB-Recognition-T": "CEB-Recognition",
-        "CEB-Jigsaw": "Jigsaw",
-        "CEB-Adult": "Adult",
-        "CEB-Credit": "Credit",
-        "StereoSet-Intersentence": "StereoSet",
-        "BiasLens-Choices": "BiasLens",
-    }
-    df_data["dataset"] = rename_dataset.get(dataset_name, dataset_name)
+    df_data["dataset"] = RENAME_DATASET.get(dataset_name, dataset_name)
+
     # Compute normalized Shannon entropy for unquantized model-assigned probabilites
     assert df_data["num_choices"].nunique() == 1, "The number of options should remain fixed in the dataset!"
     num_choices = df_data["num_choices"].unique()[0]
@@ -899,6 +943,129 @@ def load_sample_change_values(dataset_name):
     return df_data
 
 
+def load_open_dataset_agg_tests(dataset_name):
+    """
+    Load cached significance tests for open-ended datasets
+
+    Parameters
+    ----------
+    dataset_name : str
+        Name of dataset
+    """
+    if dataset_name in ["CEB-Continuation", "CEB-Conversation", "FMT10K-IM"]:
+        accum_data = []
+        for name in [f"{dataset_name}-T", f"{dataset_name}-S"]:
+            accum_data.append(load_open_dataset_agg_tests(name))
+        df_data = pd.concat(accum_data).reset_index(drop=True)
+        return df_data
+
+    # Load permutation test results
+    df_sig_test = pd.read_csv(os.path.join(
+        config.DIR_ANALYSIS, f"{dataset_name}",
+        "bootstrap-bias_score_diff-significance.csv")
+    )
+    return df_data
+
+
+def load_open_dataset_cached_indiv_metrics(dataset_name="CEB-Continuation-S", remove_cols=None, overwrite=False):
+    """
+    Load cached individual metrics for an open-ended dataset
+    """
+    # CASE 1: CEB-Continuation / CEB-Conversation / FMT10K
+    if dataset_name in ["CEB-Continuation", "CEB-Conversation", "FMT10K-IM"]:
+        accum_data = []
+        for name in [f"{dataset_name}-T", f"{dataset_name}-S"]:
+            accum_data.append(load_open_dataset_cached_indiv_metrics(name, overwrite))
+        df_data = pd.concat(accum_data).reset_index(drop=True)
+        return df_data
+
+    # Prepare save path
+    save_dir = os.path.join(config.DIR_ANALYSIS, dataset_name)
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, "metrics_data.csv")
+
+    # Load, if already done
+    if os.path.exists(save_path) and not overwrite:
+        df_data = pd.read_csv(save_path)
+        df_data["dataset"] = df_data["dataset"].map(lambda x: RENAME_DATASETs.get(x, x))
+        df_data = df_data[df_data["model_base"].isin(KEEP_BASE_MODELS)]
+        df_data = df_data[~df_data["model_modified"].map(filter_quant)]
+        if "descriptor" in df_data.columns:
+            df_data["social_group"] = df_data["descriptor"]
+        return df_data
+
+    # By default, remove response columns to save space
+    if remove_cols is None:
+        remove_cols = ["prompt"]
+        fmt_remove_cols = ["0-turn Conv", "1-turn Conv", "2-turn Conv", "3-turn Conv", "4-turn Conv"]
+        fmt_remove_cols.extend([f"{col} Response" for col in fmt_remove_cols])
+        remove_cols.extend(fmt_remove_cols)
+    df_data = supp_load_pairwise_differences([dataset_name], remove_cols=remove_cols)
+    df_data["dataset"] = df_data["dataset"].map(lambda x: RENAME_DATASETs.get(x, x))
+
+    # Filter models
+    df_data = df_data[df_data["model_base"].isin(KEEP_BASE_MODELS)]
+    df_data = df_data[~df_data["model_modified"].map(filter_quant)]
+
+    # Rename descriptor column
+    if "descriptor" in df_data.columns:
+        df_data["social_group"] = df_data.rename(columns={"descriptor": "social_group"})
+
+    # Fill in all language tool NA with 0
+    lt_cols = [col for col in df_data.columns if col.startswith("lt-")]
+    df_data[lt_cols] = df_data[lt_cols].fillna(0)
+
+    # Identify the longest common prefix
+    df_data["longest_common_prefix-num_words"] = compute_sentence_deviation_in_prefix_words(
+        df_data["res_base"], df_data["res_modified"], "num")
+    df_data["longest_common_prefix-prop_words"] = compute_sentence_deviation_in_prefix_words(
+        df_data["res_base"], df_data["res_modified"], "prop")
+
+    # Compute Rouge-L Sum
+    df_rouge_scores = pd.DataFrame(df_data.apply(
+        lambda row: compute_rouge_l(row["res_base"], row["res_modified"]),
+        axis=1
+    ).tolist())
+    df_data = pd.concat([df_data.reset_index(drop=True), df_rouge_scores], axis=1)
+
+    # Drop response columns
+    df_data = df_data.drop(columns=["res_base", "res_modified"])
+
+    # Compute differences in text metrics
+    text_metrics = [
+        "prop_non_english",
+        "num_words",
+        # Grammar
+        "lt-error_count",
+        "lt-grammar-error_count",
+        "lt-typography-error_count",
+        # Repetitions
+        "max_5gram_rep",
+        "max_4gram_rep",
+        "max_3gram_rep",
+        "max_2gram_rep",
+        "max_1gram_rep",
+        # Classifiers
+        # "toxicity",
+        # "sentiment",
+        # Word-based Polarity
+        # "gender_polarity-diff",
+    ]
+    diff_cols = []
+    for col in text_metrics:
+        base_col = f"{col}_base"
+        modified_col = f"{col}_modified"
+        if base_col not in df_data.columns and modified_col not in df_data.columns:
+            continue
+        df_data[f"{col}_diff"] = df_data[modified_col] - df_data[base_col]
+        diff_cols.append(f"{col}_diff")
+
+    # Save
+    df_data.to_csv(save_path, index=False)
+
+    return df_data
+
+
 def groupby_avg(df, groupby_col, value_col="is_significant", num_round=4, **extra_metadata):
     """
     Compute groupby-average on value column
@@ -910,27 +1077,20 @@ def groupby_avg(df, groupby_col, value_col="is_significant", num_round=4, **extr
 
 
 # Figure 1. + Supplementary Table 1.
-def change_in_agg_metrics():
-    datasets = [
-        "CEB-Recognition", "CEB-Jigsaw",
-        "CEB-Adult", "CEB-Credit",
-        "BiasLens-Choices",
-        "SocialStigmaQA",
-        "BBQ",
-        "IAT",
-        "StereoSet-Intersentence",
-        # "StereoSet-Intrasentence",
-        # "BiasLens-YesNo",
-    ]
+def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.01):
+    # Accumulate p-values across models
+    accum_data = [load_closed_dataset_cached_agg_metrics(d) for d in ALL_CLOSED_DATASETS]
+    accum_data.extend([load_open_dataset_agg_tests(d) for d in ALL_OPEN_DATASETS])
+    df_data = pd.concat(accum_data)
 
-    rename_dataset = {
-        "CEB-Jigsaw": "Jigsaw",
-        "CEB-Adult": "Adult",
-        "CEB-Credit": "Credit",
-        "StereoSet-Intersentence": "StereoSet",
-        "BiasLens-Choices": "BiasLens",
-    }
+    # Apply multiple comparisons correction
+    df_data = adjust_for_multiple_comparisons(
+        df_data,
+        correction_method=correction_method,
+        alpha=alpha,
+    )
 
+    # Re-stratify by dataset
     accum_metrics = {
         "general": [],
         "prop_sig-by_axis": [],
@@ -938,40 +1098,45 @@ def change_in_agg_metrics():
         "prop_sig-by_qmethod": [],
     }
     accum_score_changes = []
-    for dataset in datasets:
-        df_agg = load_dataset_agg_metrics(dataset)
+    for dataset in df_data["dataset"].unique().tolist():
+        df_curr = df_curr[df_curr["dataset"] == dataset]
+
         curr_metrics = {}
-        curr_metrics["dataset"] = rename_dataset.get(dataset, dataset)
-        curr_metrics["num_significant"] = df_agg["is_significant"].sum()
-        curr_metrics["num_total"] = len(df_agg)
+        curr_metrics["dataset"] = dataset
+        curr_metrics["num_significant"] = df_curr["is_significant"].sum()
+        curr_metrics["num_total"] = len(df_curr)
+
         # Proportion of models with at least one significant change
-        curr_metrics["prop_significant"] = round(df_agg.groupby("model_modified")["is_significant"].any().mean(), 4)
+        curr_metrics["prop_significant"] = round(df_curr.groupby("model_modified")["is_significant"].any().mean(), 4)
+
         # Compute metrics on significant changes
-        df_sig_changes = df_agg[df_agg["is_significant"]]
+        df_sig_changes = df_curr[df_curr["is_significant"]]
         curr_metrics["significant-score_diff-min"] = df_sig_changes["agg_score_diff"].map(lambda x: x.mean).min()
         curr_metrics["significant-score_diff-max"] = df_sig_changes["agg_score_diff"].map(lambda x: x.mean).max()
         min_max_vals = [curr_metrics["significant-score_diff-min"], curr_metrics["significant-score_diff-max"]]
+
         # Ensure they're normalized to below 1
         if min_max_vals[1] > 1:
             min_max_vals = [val / 100 for val in min_max_vals]
         curr_metrics["significant-score_diff"] = min_max_vals
         curr_metrics["significant-more_biased"] = df_sig_changes["significant_direction"].value_counts(normalize=True).round(4)["more biased"]
         accum_metrics["general"].append(curr_metrics)
-        # Which social axes were most impacted
-        accum_metrics["prop_sig-by_axis"].append(groupby_avg(df_agg, "social_axis", dataset=dataset))
+
         # Aggregated by dataset
-        df_agg_by_dataset = df_agg.groupby(["model_modified", "model_base", "q_method_full"])["is_significant"].any().reset_index()
+        df_curr_by_dataset = df_curr.groupby(["model_modified", "model_base", "q_method_full"])["is_significant"].any().reset_index()
+
         # Which model was most impacted
-        accum_metrics["prop_sig-by_model"].append(groupby_avg(df_agg_by_dataset, "model_base", dataset=dataset))
+        accum_metrics["prop_sig-by_model"].append(groupby_avg(df_curr_by_dataset, "model_base", dataset=dataset))
+
         # Which quantization strategies
-        accum_metrics["prop_sig-by_qmethod"].append(groupby_avg(df_agg_by_dataset, "q_method_full", dataset=dataset))
-        df_diff = df_agg[["agg_score_diff"]].copy()
+        accum_metrics["prop_sig-by_qmethod"].append(groupby_avg(df_curr_by_dataset, "q_method_full", dataset=dataset))
+        df_diff = df_curr[["agg_score_diff"]].copy()
         df_diff["agg_score_diff"] = df_diff["agg_score_diff"].map(lambda x: x.mean).round(4)
         if df_diff["agg_score_diff"].max() > 1:
             df_diff["agg_score_diff"] = df_diff["agg_score_diff"] / 100
-        df_diff["dataset"] = rename_dataset.get(dataset, dataset)
+        df_diff["dataset"] = RENAME_DATASET.get(dataset, dataset)
+
         accum_score_changes.append(df_diff)
-        # TODO: Consider proportion of significant changes by `model_base` entropy
 
     ############################################################################
     #                               Plotting                                   #
@@ -980,19 +1145,28 @@ def change_in_agg_metrics():
     df_general = pd.DataFrame(accum_metrics["general"])
     df_general["perc_significant"] = (100 * df_general["prop_significant"]).astype(int)
     viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    viz_utils.catplot(
-        df_general,
-        plot_type="bar",
+    viz_utils.numplot(
+        df_data,
+        plot_type="displot",
         y="dataset",
-        x="perc_significant",
+        x="is_significant",
+        hue="significant_direction",
+        multipl="stack",
         color="#F2B87D",
         x_lim=[0, 100],
         ylabel="",
-        xlabel="% of Models With Significant Change",
+        xlabel="% With Significant Behavior Change",
         # title="Significant Change in Bias Scores",
         save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
         save_fname="fig2-perc_significant_vs_not_significant.svg",
     )
+
+    # TODO: 2B. Distribution of Effect Sizes Among Significant Changes
+
+
+    # TODO: 2C % Response Flipped Among Significantly vs. Insignificantly
+    # Affected Sub-Datasets
+
 
     # 2B. Plot greatest change in bias scores for significant
     data = df_general.explode("significant-score_diff")
@@ -1021,81 +1195,46 @@ def change_in_agg_metrics():
         save_fname="fig2-agg_bias_scores_change-violin.svg",
     )
 
-    # By social axis
-    df_axis = pd.concat(accum_metrics["prop_sig-by_axis"])
-    df_axis = df_axis.pivot(index="social_axis", columns="dataset", values="is_significant")
-
-    # By model
-    df_model = pd.concat(accum_metrics["prop_sig-by_model"])
-    df_model = df_model.pivot(index="model_base", columns="dataset", values="is_significant")
-
-    # By quantization
-    order = [
-        "RTN W8A16",
-        "RTN W4A16",
-        "RTN W4A16 + SQ",
-        "GPTQ W4A16",
-        "AWQ W4A16"
-    ]
-    df_qmethod = pd.concat(accum_metrics["prop_sig-by_qmethod"])
-    df_qmethod = df_qmethod.pivot(index="q_method_full", columns="dataset", values="is_significant")
-
-    # Average the proportion of quantized models that flip (per dataset by each quantization method) across the datasets
-    df_qmethod = df_qmethod.dropna().mean(axis=1).sort_index(ascending=False)
-    df_qmethod = (100 * df_qmethod).astype(int)
-    df_qmethod.name = "perc_significant"
-    df_qmethod = df_qmethod.reset_index()
-
-    # 2C. Plot proportion of significant changes in bias scores by quantization method
-    # TODO: Change so that it"s proportion of significant changes at the dataset level (instead of dataset / axis level)
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    viz_utils.catplot(
-        df_qmethod,
-        plot_type="bar",
-        y="q_method_full",
-        x="perc_significant",
-        order=order,
-        color="#F6D07F",
-        x_lim=[0, 60],
-        ylabel="",
-        xlabel="% of Models With Significant Change",
-        title="",
-        save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-        save_fname="fig2-perc_significant_by_q_method.svg",
-    )
-
-    ############################################################################
-    #                              Text Stats                                  #
-    ############################################################################
-    model_to_directions = []
-    for dataset in datasets:
-        df_agg = load_dataset_agg_metrics(dataset)
-        df_agg[df_agg["q_method_full"].str.contains("W8A8")]["model_base"].unique()
-        df_agg_by_dataset = df_agg.groupby(["model_modified", "model_base", "q_method_full"])["is_significant"].any().reset_index()
-        df_agg_sig = df_agg[df_agg["is_significant"]]
-        print(f"[{dataset}] 1+ was significant:", df_agg_sig.groupby("model_base")["is_significant"].any().all())
-        all_1_direction = (df_agg_sig.groupby("model_modified")["significant_direction"].nunique() <= 1).all()
-        print(f"[{dataset}] All quantized model single direction of impact:", all_1_direction)
-        print("")
-        model_to_directions.append(df_agg.groupby("model_base")["significant_direction"].nunique())
 
 
-    # Recognition. Bias change
-    df_recognition = load_dataset_agg_metrics("CEB-Recognition")
-    df_recognition.groupby("q_method_full")["significant_direction"].value_counts(normalize=True)
-    df_recognition.groupby("model_modified")["significant_direction"].value_counts().reset_index()
-    df_recognition_sig = df_recognition[df_recognition["is_significant"]]
-    df_recognition_sig["q_method_full"].value_counts()
-    value_diff = df_recognition_sig["agg_score_diff"].map(lambda x: x.mean)
-    pd.cut(value_diff, bins=[-0.2, -0.1, 0.1, 0.2, 0.3, 0.4, 0.5]).value_counts(normalize=True).sort_index()
 
-    # SocialStigmaQA
-    df_social_stigma = load_dataset_agg_metrics("SocialStigmaQA")
-    df_social_stigma.groupby("model_modified")["is_significant"].any()
-    df_social_stigma_sig = df_social_stigma[df_social_stigma["is_significant"]]
-    df_social_stigma_sig["q_method_full"].value_counts()
-    value_diff = df_social_stigma_sig["agg_score_diff"].map(lambda x: x.mean)
-    pd.cut(value_diff, bins=[0, 0.01, 0.02, 0.03, 0.04, 0.05]).value_counts(normalize=True).sort_index()
+    ################################################################################
+    #                                 To Be Moved                                  #
+    ################################################################################
+    # # By quantization
+    # order = [
+    #     "RTN W8A16",
+    #     "RTN W4A16",
+    #     "RTN W4A16 + SQ",
+    #     "GPTQ W4A16",
+    #     "AWQ W4A16"
+    # ]
+    # df_qmethod = pd.concat(accum_metrics["prop_sig-by_qmethod"])
+    # df_qmethod = df_qmethod.pivot(index="q_method_full", columns="dataset", values="is_significant")
+
+    # # Average the proportion of quantized models that flip (per dataset by each quantization method) across the datasets
+    # df_qmethod = df_qmethod.dropna().mean(axis=1).sort_index(ascending=False)
+    # df_qmethod = (100 * df_qmethod).astype(int)
+    # df_qmethod.name = "perc_significant"
+    # df_qmethod = df_qmethod.reset_index()
+
+    # # 2C. Plot proportion of significant changes in bias scores by quantization method
+    # # TODO: Change so that it"s proportion of significant changes at the dataset level (instead of dataset / axis level)
+    # viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+    # viz_utils.catplot(
+    #     df_qmethod,
+    #     plot_type="bar",
+    #     y="q_method_full",
+    #     x="perc_significant",
+    #     order=order,
+    #     color="#F6D07F",
+    #     x_lim=[0, 60],
+    #     ylabel="",
+    #     xlabel="% of Models With Significant Change",
+    #     title="",
+    #     save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+    #     save_fname="fig2-perc_significant_by_q_method.svg",
+    # )
 
 
 # Supplementary Table. INT8 weight quantization leads to fewer changes
@@ -1105,23 +1244,16 @@ def change_in_agg_metrics_int8():
         "CEB-Adult",
         "CEB-Credit",
     ]
-    rename_dataset = {
-        "CEB-Jigsaw": "Jigsaw",
-        "CEB-Adult": "Adult",
-        "CEB-Credit": "Credit",
-        "StereoSet-Intersentence": "StereoSet",
-        "BiasLens-Choices": "BiasLens",
-    }
 
     accum_metrics = {
         "prop_sig-by_qmethod": [],
     }
     for dataset in datasets:
-        df_agg = load_dataset_agg_metrics(dataset, keep_w8a8=True)
+        df_curr = load_closed_dataset_cached_agg_metrics(dataset, keep_w8a8=True)
         # Aggregated by dataset
-        df_agg_by_dataset = df_agg.groupby(["model_modified", "model_base", "q_method_full"])["is_significant"].any().reset_index()
+        df_curr_by_dataset = df_curr.groupby(["model_modified", "model_base", "q_method_full"])["is_significant"].any().reset_index()
         # Which quantization strategies
-        accum_metrics["prop_sig-by_qmethod"].append(groupby_avg(df_agg_by_dataset, "q_method_full", dataset=dataset))
+        accum_metrics["prop_sig-by_qmethod"].append(groupby_avg(df_curr_by_dataset, "q_method_full", dataset=dataset))
 
     # By quantization
     order = [
@@ -1157,22 +1289,14 @@ def change_in_response_flipping_by_sig_bias():
         # "BiasLens-YesNo",
     ]
 
-    rename_dataset = {
-        "CEB-Jigsaw": "Jigsaw",
-        "CEB-Adult": "Adult",
-        "CEB-Credit": "Credit",
-        "StereoSet-Intersentence": "StereoSet",
-        "BiasLens-Choices": "BiasLens",
-    }
-
     accum_direction_metrics = []
     direction_to_bias_transition = {}
     for dataset in datasets:
-        df_probs_changed = load_sample_change_values(dataset)
-        df_agg = load_dataset_agg_metrics(dataset)
+        df_probs_changed = load_closed_dataset_entropy_changes(dataset)
+        df_agg = load_closed_dataset_cached_agg_metrics(dataset)
         if df_probs_changed.empty or df_agg.empty:
             continue
-        renamed_dataset = rename_dataset.get(dataset, dataset)
+        renamed_dataset = RENAME_DATASET.get(dataset, dataset)
         # Split quantized models by social axis and significant changes post-quantization
         sig_to_models = df_agg.groupby(["social_axis", "significant_direction"], dropna=False)["model_modified"].unique().reset_index()
         sig_to_models["significant_direction"] = sig_to_models["significant_direction"].fillna("not significant")
@@ -1244,7 +1368,7 @@ def change_in_response_flipping_by_sig_bias():
     df_table_2 = pd.concat(accum_table_2, axis=1)
     df_table_2 = df_table_2.fillna(0)
     # Reorder by datasets
-    renamed_datasets = [rename_dataset.get(d, d) for d in datasets]
+    renamed_datasets = [RENAME_DATASET.get(d, d) for d in datasets]
     df_table_2 = df_table_2.loc[[d for d in renamed_datasets if d in df_table_2.index]]
     # Save as table 2
     save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
@@ -1266,22 +1390,14 @@ def change_in_response_flipping():
         # "BiasLens-YesNo",
     ]
 
-    rename_dataset = {
-        "CEB-Jigsaw": "Jigsaw",
-        "CEB-Adult": "Adult",
-        "CEB-Credit": "Credit",
-        "StereoSet-Intersentence": "StereoSet",
-        "BiasLens-Choices": "BiasLens",
-    }
-
     accum_metrics = []
     for dataset in datasets:
-        df_probs_changed = load_sample_change_values(dataset)
+        df_probs_changed = load_closed_dataset_entropy_changes(dataset)
         if df_probs_changed.empty:
             continue
         assert df_probs_changed["num_choices"].nunique() == 1, "The number of options should remain fixed in the dataset!"
         curr_metrics = {}
-        curr_metrics["dataset"] = rename_dataset.get(dataset, dataset)
+        curr_metrics["dataset"] = RENAME_DATASET.get(dataset, dataset)
         num_choices = df_probs_changed["num_choices"].unique()[0]
         curr_metrics["num_choices"] = num_choices
         # Get measures at different uncertainty levels
@@ -1415,17 +1531,9 @@ def change_in_probabilities():
         # "BiasLens-YesNo",
     ]
 
-    rename_dataset = {
-        "CEB-Jigsaw": "Jigsaw",
-        "CEB-Adult": "Adult",
-        "CEB-Credit": "Credit",
-        "StereoSet-Intersentence": "StereoSet",
-        "BiasLens-Choices": "BiasLens",
-    }
-
     accum_probs = []
     for dataset in datasets:
-        df_probs_changed = load_sample_change_values(dataset)
+        df_probs_changed = load_closed_dataset_entropy_changes(dataset)
         if df_probs_changed.empty:
             continue
         accum_probs.append(df_probs_changed)
@@ -1541,12 +1649,12 @@ def change_in_probabilities():
             y="Flipped",
             x="normalized_entropy_base_round",
             y_lim=[0, 0.5],
-            ylabel=rename_dataset.get(dataset, dataset),
+            ylabel=RENAME_DATASET.get(dataset, dataset),
             ax=axs[idx],
             **plot_kwargs,
         )
         axs[idx].set_ylabel(
-            rename_dataset.get(dataset, dataset),
+            RENAME_DATASET.get(dataset, dataset),
             rotation=0,
             ha="right",
             va="center",
@@ -1592,16 +1700,9 @@ def factors_related_to_response_flipping():
         # "BiasLens-YesNo",
     ]
 
-    rename_dataset = {
-        "CEB-Jigsaw": "Jigsaw",
-        "CEB-Adult": "Adult",
-        "CEB-Credit": "Credit",
-        "StereoSet-Intersentence": "StereoSet",
-        "BiasLens-Choices": "BiasLens",
-    }
     accum_probs = []
     for dataset in datasets:
-        df_probs_changed = load_sample_change_values(dataset)
+        df_probs_changed = load_closed_dataset_entropy_changes(dataset)
         if df_probs_changed.empty:
             continue
         accum_probs.append(df_probs_changed)
@@ -1627,7 +1728,7 @@ def factors_related_to_response_flipping():
         "qwen2.5-7b-instruct": "Qwen 2.5 7B",
         "qwen2.5-14b-instruct": "Qwen 2.5 14B",
     }
-    dataset_order = [rename_dataset.get(dataset, dataset) for dataset in datasets]
+    dataset_order = [RENAME_DATASET.get(dataset, dataset) for dataset in datasets]
     df_models = df_probs.groupby(["model_base", "dataset"])["Flipped"].mean().reset_index()
     df_models = df_models.pivot(index="model_base", columns="dataset", values="Flipped")
     df_models = df_models[dataset_order]
@@ -1660,7 +1761,7 @@ def factors_related_to_response_flipping():
     viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
     fig, axs = plt.subplots(len(datasets), 1, sharex=True)
     for idx, dataset in enumerate(datasets):
-        df_dataset = df_probs[df_probs["dataset"] == rename_dataset.get(dataset, dataset)]
+        df_dataset = df_probs[df_probs["dataset"] == RENAME_DATASET.get(dataset, dataset)]
         df_by_questions = df_dataset.groupby("idx")["Flipped"].mean().round(3).reset_index(name="response_flipped")
         plot_kwargs = {
             "xlabel": "",
@@ -1674,13 +1775,13 @@ def factors_related_to_response_flipping():
             plot_type="kde", fill=True,
             color="#B85C5C",
             x="response_flipped",
-            ylabel=rename_dataset.get(dataset, dataset),
+            ylabel=RENAME_DATASET.get(dataset, dataset),
             x_lim=[0, 0.5],
             ax=axs[idx],
             **plot_kwargs,
         )
         axs[idx].set_ylabel(
-            rename_dataset.get(dataset, dataset),
+            RENAME_DATASET.get(dataset, dataset),
             rotation=0,
             ha="right",
             va="center",
@@ -1699,7 +1800,7 @@ def change_in_response_by_social_group_bbq():
     os.makedirs(save_dir, exist_ok=True)
 
     # Load datasets
-    df_bbq = load_sample_change_values("BBQ")
+    df_bbq = load_closed_dataset_entropy_changes("BBQ")
     df_bbq = df_bbq.dropna()
 
     # Add missing columns
@@ -1763,7 +1864,7 @@ def change_in_response_by_social_group_bbq():
     df_socialgroup = df_socialgroup[df_socialgroup >= 30].reset_index(name="num_samples")
 
     # Identify models that were significant
-    df_agg = load_dataset_agg_metrics("BBQ")
+    df_agg = load_closed_dataset_cached_agg_metrics("BBQ")
     mask = df_agg.groupby(["model_modified", "q_method_full"])["is_significant"].any()
     mask = mask[mask]
     print(mask)
@@ -1965,7 +2066,7 @@ def change_in_response_by_social_group_bbq():
 def change_in_response_by_social_group_biaslens():
     dataset = "BiasLens-Choices"
     # Load datasets
-    df_probs_original = load_sample_change_values(dataset)
+    df_probs_original = load_closed_dataset_entropy_changes(dataset)
     # df_probs = df_probs.dropna()
 
     # Add missing columns
@@ -2021,7 +2122,7 @@ def change_in_response_by_social_group_biaslens():
     df_probs.loc[mask, "flipped-unb_to_b"] = (df_probs.loc[mask, "flip_direction"] == "unbiased_to_biased")
 
     # Identify models that were not significant anywhere
-    df_agg = load_dataset_agg_metrics(dataset)
+    df_agg = load_closed_dataset_cached_agg_metrics(dataset)
     mask = df_agg.groupby(["model_modified", "q_method_full"])["is_significant"].any()
     mask = mask[~mask]
     print(mask)
@@ -2186,112 +2287,6 @@ def change_in_response_by_social_group_biaslens():
 ################################################################################
 #                              Open-Ended Results                              #
 ################################################################################
-# Loading function for open-ended datasets
-def load_open_sample_change_values(dataset_name="CEB-Continuation-S", remove_cols=None, overwrite=False):
-    # CASE 1: CEB-Continuation / CEB-Conversation / FMT10K
-    if dataset_name in ["CEB-Continuation", "CEB-Conversation", "FMT10K-IM"]:
-        accum_data = []
-        for name in [f"{dataset_name}-T", f"{dataset_name}-S"]:
-            accum_data.append(load_open_sample_change_values(name, overwrite))
-        df_data = pd.concat(accum_data).reset_index(drop=True)
-        return df_data
-
-    rename_datasets = {
-        "CEB-Continuation-S": "CEB-Continuation",
-        "CEB-Continuation-T": "CEB-Continuation",
-        "CEB-Conversation-S": "CEB-Conversation",
-        "CEB-Conversation-T": "CEB-Conversation",
-        "FMT10K-IM-S": "FMT10K",
-        "FMT10K-IM-T": "FMT10K",
-        "BiasLens-GenWhy": "BiasLens",
-    }
-
-    # prepare save path
-    save_dir = os.path.join(config.DIR_ANALYSIS, dataset_name)
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, "metrics_data.csv")
-
-    # Load, if already done
-    if os.path.exists(save_path) and not overwrite:
-        df_data = pd.read_csv(save_path)
-        df_data["dataset"] = df_data["dataset"].map(lambda x: rename_datasets.get(x, x))
-        df_data = df_data[df_data["model_base"].isin(KEEP_BASE_MODELS)]
-        df_data = df_data[~df_data["model_modified"].map(filter_quant)]
-        if "descriptor" in df_data.columns:
-            df_data["social_group"] = df_data["descriptor"]
-        return df_data
-
-    # By default, remove response columns to save space
-    if remove_cols is None:
-        remove_cols = ["prompt"]
-        fmt_remove_cols = ["0-turn Conv", "1-turn Conv", "2-turn Conv", "3-turn Conv", "4-turn Conv"]
-        fmt_remove_cols.extend([f"{col} Response" for col in fmt_remove_cols])
-        remove_cols.extend(fmt_remove_cols)
-    df_data = supp_load_pairwise_differences([dataset_name], remove_cols=remove_cols)
-    df_data["dataset"] = df_data["dataset"].map(lambda x: rename_datasets.get(x, x))
-
-    # Filter models
-    df_data = df_data[df_data["model_base"].isin(KEEP_BASE_MODELS)]
-    df_data = df_data[~df_data["model_modified"].map(filter_quant)]
-
-    # Rename descriptor column
-    if "descriptor" in df_data.columns:
-        df_data["social_group"] = df_data.rename(columns={"descriptor": "social_group"})
-
-    # Fill in all language tool NA with 0
-    lt_cols = [col for col in df_data.columns if col.startswith("lt-")]
-    df_data[lt_cols] = df_data[lt_cols].fillna(0)
-
-    # Identify the longest common prefix
-    df_data["longest_common_prefix-num_words"] = compute_sentence_deviation_in_prefix_words(
-        df_data["res_base"], df_data["res_modified"], "num")
-    df_data["longest_common_prefix-prop_words"] = compute_sentence_deviation_in_prefix_words(
-        df_data["res_base"], df_data["res_modified"], "prop")
-
-    # Compute Rouge-L Sum
-    df_rouge_scores = pd.DataFrame(df_data.apply(
-        lambda row: compute_rouge_l(row["res_base"], row["res_modified"]),
-        axis=1
-    ).tolist())
-    df_data = pd.concat([df_data.reset_index(drop=True), df_rouge_scores], axis=1)
-
-    # Drop response columns
-    df_data = df_data.drop(columns=["res_base", "res_modified"])
-
-    # Compute differences in text metrics
-    text_metrics = [
-        "prop_non_english",
-        "num_words",
-        # Grammar
-        "lt-error_count",
-        "lt-grammar-error_count",
-        "lt-typography-error_count",
-        # Repetitions
-        "max_5gram_rep",
-        "max_4gram_rep",
-        "max_3gram_rep",
-        "max_2gram_rep",
-        "max_1gram_rep",
-        # Classifiers
-        # "toxicity",
-        # "sentiment",
-        # Word-based Polarity
-        # "gender_polarity-diff",
-    ]
-    diff_cols = []
-    for col in text_metrics:
-        base_col = f"{col}_base"
-        modified_col = f"{col}_modified"
-        if base_col not in df_data.columns and modified_col not in df_data.columns:
-            continue
-        df_data[f"{col}_diff"] = df_data[modified_col] - df_data[base_col]
-        diff_cols.append(f"{col}_diff")
-
-    # Save
-    df_data.to_csv(save_path, index=False)
-    return
-
-
 def get_mask_on_grammar_and_redundancy(df_data):
     # Create mask to keep samples that are within [5th to 95th quantiles]
     threshold_cols = ["lt-error_count", "max_5gram_rep", "max_4gram_rep", "max_3gram_rep", "max_2gram_rep", "max_1gram_rep"]
@@ -2319,7 +2314,7 @@ def change_in_text_patterns():
     ]
     accum_data = []
     for dataset in dataset_names:
-        df_valid = load_open_sample_change_values(dataset)
+        df_valid = load_open_dataset_cached_indiv_metrics(dataset)
         accum_data.append(df_valid)
 
     df_data = pd.concat(accum_data)
@@ -2503,7 +2498,7 @@ def change_in_text_bias():
     accum_mask = []
     for dataset in dataset_names:
         # Load sample metrics
-        df_valid = load_open_sample_change_values(dataset)
+        df_valid = load_open_dataset_cached_indiv_metrics(dataset)
         df_valid = audit_datasets.merge_chatgpt_parsed(df_valid, dataset)
         # Drop rows with missing values
         check_na_cols = []
@@ -2790,7 +2785,7 @@ def change_in_text_bias_fmt10k():
     accum_mask = []
     for dataset in dataset_names:
         # Load sample metrics
-        df_valid = load_open_sample_change_values(dataset)
+        df_valid = load_open_dataset_cached_indiv_metrics(dataset)
         df_valid = audit_datasets.merge_chatgpt_parsed(df_valid, dataset)
         # Drop rows with missing values
         check_na_cols = []
@@ -2894,7 +2889,7 @@ def change_in_text_bias_biaslens():
     accum_mask = []
     for dataset in dataset_names:
         # Load sample metrics
-        df_valid = load_open_sample_change_values(dataset)
+        df_valid = load_open_dataset_cached_indiv_metrics(dataset)
         df_valid = audit_datasets.merge_chatgpt_parsed(df_valid, dataset)
         # Drop rows with missing values
         check_na_cols = []
@@ -4653,36 +4648,12 @@ def groupby_permutation_test(
         return df_results
 
     # Apply multiple comparisons correction only to groups with valid p-values
-    valid_mask = df_results['p_value'].notna() if 'p_value' in df_results.columns else pd.Series([False] * len(df_results))
-    
-    if valid_mask.sum() == 0:
-        return df_results
-        
-    raw_p_values = df_results.loc[valid_mask, 'p_value'].values
-    
-    try:
-        reject, p_adjusted, _, _ = multipletests(raw_p_values, method=correction_method, alpha=alpha)
-        
-        # Initialize columns with NaN
-        df_results['adjusted_p_value'] = None
-        df_results['significant'] = False
-        df_results['correction_method'] = correction_method
-        df_results['alpha'] = alpha
-        
-        # Fill in the valid results
-        df_results.loc[valid_mask, 'adjusted_p_value'] = p_adjusted
-        df_results.loc[valid_mask, 'significant'] = reject
-
-        # print(f"\nMultiple Comparisons Summary:")
-        # print(f"Total comparisons: {len(raw_p_values)}")
-        # print(f"Raw significant (α={alpha}): {np.sum(raw_p_values < alpha)}")
-        # print(f"{correction_method.upper()} significant: {np.sum(reject)}")
-    except Exception as e:
-        warnings.warn(f"Multiple comparisons correction failed: {e}")
-        df_results['adjusted_p_value'] = raw_p_values
-        df_results['significant'] = raw_p_values < alpha
-
-    return df_results.sort_values('adjusted_p_value', na_position='last')
+    df_results = adjust_for_multiple_comparisons(
+        df_results,
+        correction_method=correction_method,
+        alpha=alpha,
+    )
+    return df_results
 
 
 def permutation_test_single_group(group_df, metric_func, unquant_col, quant_col, n_iter, **kwargs):
@@ -4996,6 +4967,66 @@ def compute_bootstrap_sample(df, metric_func, kwargs):
         replace=True   # Sample with replacement for bootstrapping
     )
     return metric_func(df.loc[bootstrap_indices], **kwargs)
+
+
+def adjust_for_multiple_comparisons(df_results, pval_col="p_value", correction_method="fdr_bh", alpha=0.01):
+    """
+    Adjust for multiple comparisons
+
+    Parameters
+    ----------
+    df_results : pd.DataFrame
+        Table where each row is a hypothesis test with a p-value
+    pval_col : str
+        Name of column containing p-values
+    correction_method : str
+        Multiple comparisons correction method
+    alpha : float
+        Desired significance level post-correction
+
+    Returns
+    -------
+    pd.DataFrame
+        Table with `adjusted_p_value`, 
+    """
+    # Apply multiple comparisons correction only to groups with valid p-values
+    valid_mask = df_results[pval_col].notna() if pval_col in df_results.columns else pd.Series([False] * len(df_results))
+    # Early exit, if no valid p-values
+    if valid_mask.sum() == 0:
+        return df_results
+
+    # Initialize columns with NaN
+    df_results['adjusted_p_value'] = None
+    df_results["is_significant"] = False
+    df_results["significant_direction"] = None
+    df_results['correction_method'] = correction_method
+    df_results['alpha'] = alpha
+
+    try:
+        raw_p_values = df_results.loc[valid_mask, pval_col].to_numpy()
+        reject, p_adjusted, _, _ = multipletests(raw_p_values, method=correction_method, alpha=alpha)
+    except Exception as e:
+        warnings.warn(f"Multiple comparisons correction failed: {e}")
+        df_results['adjusted_p_value'] = raw_p_values
+        df_results["is_significant"] = raw_p_values < alpha
+        return df_results
+
+    # Fill in the valid results
+    df_results.loc[valid_mask, 'adjusted_p_value'] = p_adjusted
+    df_results.loc[valid_mask, "is_significant"] = reject
+
+    print(f"\nMultiple Comparisons Summary:")
+    print(f"Total comparisons: {len(raw_p_values)}")
+    print(f"Raw significant (α={alpha}): {np.sum(raw_p_values < alpha)}")
+    print(f"{correction_method.upper()} significant: {np.sum(reject)}")
+
+    # Add direction of significance
+    if "cohens_d" in df_results.columns:
+        mask = df_results["is_significant"]
+        df_results.loc[mask, "significant_direction"] = df_results.loc[mask, "cohens_d"].map(
+            lambda x: "more biased" if x > 0 else "less biased")
+
+    return df_results.sort_values('adjusted_p_value', na_position='last')
 
 
 def compute_log_odds(prob, epsilon=1e-10):
