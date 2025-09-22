@@ -1,18 +1,16 @@
 #!/bin/bash -l
-#SBATCH --job-name=run_all                    # Job name
-#SBATCH -o slurm/logs/slurm-run_all-%j.out
+#SBATCH --job-name=generate                    # Job name
+#SBATCH -o slurm/logs/slurm-generate-%j.out
+
+#SBATCH --account=fc_chenlab
 #SBATCH --nodes=1                         # Number of nodes
-#SBATCH --gres=gpu:NVIDIA_H100_NVL:1
-#--qos=gpu_deadline_q
-# --reservation=stan_gpu
-#--nodelist=cn527                         # Number of nodes
-# --gres=gpu:NVIDIA_L40S:1
-# --gres=gpu:NVIDIA_H100_NVL:1
-# --gres=gpu:NVIDIA_H100_80GB_HBM3:2
 #SBATCH --cpus-per-task=8                 # Number of CPU cores per TASK
+#SBATCH --partition=savio3_gpu
+#SBATCH --gres=gpu:A40:1                      # Request one GPU
+#SBATCH --qos=a40_gpu3_normal
 #SBATCH --mem=32GB
-#SBATCH --tmp=8GB
-#SBATCH --time=32:00:00
+# --tmp=8GB
+#SBATCH --time=1:00:00
 # --begin=now+10hours
 
 # If you want to do it in the terminal,
@@ -26,12 +24,12 @@
 ################################################################################
 #                                 Environment                                  #
 ################################################################################
-# Load CUDA libraries
-module load gcc/12.1.0
-module load cuda/12.4.1
+# # Load CUDA libraries
+# module load gcc/12.1.0
+# module load cuda/12.4.1
 
 # Load any necessary modules or activate your virtual environment here
-micromamba activate fairbench
+# micromamba activate fairbench
 # micromamba activate quip
 
 # Configures vLLM to avoid multiprocessing issue
@@ -62,7 +60,7 @@ MODEL_NAMES=(
     # llama3.2-1b-instruct-lc-rtn-w8a16
     # llama3.2-1b-instruct-lc-gptq-w4a16
     # llama3.2-1b-instruct-lc-smooth-gptq-w4a16
-    # llama3.2-1b-instruct-awq-w4a16
+    llama3.2-1b-instruct-awq-w4a16
     # hf-llama3.2-1b-instruct-aqlm-pv-2bit-2x8
 
     # # # 2.1. LLaMA 3.2 3B model
@@ -108,52 +106,52 @@ MODEL_NAMES=(
     # # mistral-v0.3-7b
     # # mistral-v0.3-7b-instruct
 
-    # # 2.4 Ministral 8B
-    ministral-8b-instruct
-    ministral-8b-instruct-lc-rtn-w4a16
-    ministral-8b-instruct-lc-smooth-rtn-w4a16
-    ministral-8b-instruct-lc-rtn-w8a8
-    ministral-8b-instruct-lc-smooth-rtn-w8a8
-    ministral-8b-instruct-lc-rtn-w8a16
-    ministral-8b-instruct-lc-gptq-w4a16
-    ministral-8b-instruct-lc-smooth-gptq-w4a16
-    ministral-8b-instruct-awq-w4a16
+    # # # 2.4 Ministral 8B
+    # ministral-8b-instruct
+    # ministral-8b-instruct-lc-rtn-w4a16
+    # ministral-8b-instruct-lc-smooth-rtn-w4a16
+    # ministral-8b-instruct-lc-rtn-w8a8
+    # ministral-8b-instruct-lc-smooth-rtn-w8a8
+    # ministral-8b-instruct-lc-rtn-w8a16
+    # ministral-8b-instruct-lc-gptq-w4a16
+    # ministral-8b-instruct-lc-smooth-gptq-w4a16
+    # ministral-8b-instruct-awq-w4a16
 
-    # 2.5 Mistral Small 22B
-    mistral-small-22b-instruct
-    mistral-small-22b-instruct-lc-rtn-w4a16
-    mistral-small-22b-instruct-lc-smooth-rtn-w4a16
-    mistral-small-22b-instruct-lc-rtn-w8a8
-    mistral-small-22b-instruct-lc-smooth-rtn-w8a8
-    mistral-small-22b-instruct-lc-rtn-w8a16
-    mistral-small-22b-instruct-lc-gptq-w4a16
-    mistral-small-22b-instruct-lc-smooth-gptq-w4a16
-    mistral-small-22b-instruct-awq-w4a16
+    # # 2.5 Mistral Small 22B
+    # mistral-small-22b-instruct
+    # mistral-small-22b-instruct-lc-rtn-w4a16
+    # mistral-small-22b-instruct-lc-smooth-rtn-w4a16
+    # mistral-small-22b-instruct-lc-rtn-w8a8
+    # mistral-small-22b-instruct-lc-smooth-rtn-w8a8
+    # mistral-small-22b-instruct-lc-rtn-w8a16
+    # mistral-small-22b-instruct-lc-gptq-w4a16
+    # mistral-small-22b-instruct-lc-smooth-gptq-w4a16
+    # mistral-small-22b-instruct-awq-w4a16
 
-    # # 2.6. Qwen2 7B
-    qwen2-7b
-    qwen2-7b-instruct
-    qwen2-7b-instruct-lc-rtn-w4a16
-    qwen2-7b-instruct-lc-smooth-rtn-w4a16
-    qwen2-7b-instruct-lc-rtn-w8a8
-    qwen2-7b-instruct-lc-smooth-rtn-w8a8
-    qwen2-7b-instruct-lc-rtn-w8a16
-    hf-qwen2-7b-instruct-awq-w4a16
-    hf-qwen2-7b-instruct-gptq-w4a16
-    hf-qwen2-7b-instruct-gptq-w8a16
+    # # # 2.6. Qwen2 7B
+    # qwen2-7b
+    # qwen2-7b-instruct
+    # qwen2-7b-instruct-lc-rtn-w4a16
+    # qwen2-7b-instruct-lc-smooth-rtn-w4a16
+    # qwen2-7b-instruct-lc-rtn-w8a8
+    # qwen2-7b-instruct-lc-smooth-rtn-w8a8
+    # qwen2-7b-instruct-lc-rtn-w8a16
+    # hf-qwen2-7b-instruct-awq-w4a16
+    # hf-qwen2-7b-instruct-gptq-w4a16
+    # hf-qwen2-7b-instruct-gptq-w8a16
 
-    # # 2.7. Qwen2 72B
-    qwen2-72b
-    qwen2-72b-instruct
-    qwen2-72b-instruct-lc-rtn-w4a16
-    qwen2-72b-instruct-lc-smooth-rtn-w4a16
-    qwen2-72b-instruct-lc-rtn-w8a8
-    qwen2-72b-instruct-lc-smooth-rtn-w8a8
-    qwen2-72b-instruct-lc-rtn-w8a16
-    hf-qwen2-72b-instruct-gptq-w4a16
-    hf-qwen2-72b-instruct-awq-w4a16
-    hf-qwen2-72b-instruct-aqlm-pv-2bit-1x16
-    hf-qwen2-72b-instruct-aqlm-pv-1bit-1x16
+    # # # 2.7. Qwen2 72B
+    # qwen2-72b
+    # qwen2-72b-instruct
+    # qwen2-72b-instruct-lc-rtn-w4a16
+    # qwen2-72b-instruct-lc-smooth-rtn-w4a16
+    # qwen2-72b-instruct-lc-rtn-w8a8
+    # qwen2-72b-instruct-lc-smooth-rtn-w8a8
+    # qwen2-72b-instruct-lc-rtn-w8a16
+    # hf-qwen2-72b-instruct-gptq-w4a16
+    # hf-qwen2-72b-instruct-awq-w4a16
+    # hf-qwen2-72b-instruct-aqlm-pv-2bit-1x16
+    # hf-qwen2-72b-instruct-aqlm-pv-1bit-1x16
 
     # # # 2.8. Qwen2.5 0.5B
     # qwen2.5-0.5b
@@ -322,7 +320,7 @@ CHAT_FLAGS=(
 NUM_GPUS=1
 
 # Datasets to infer on
-DATASET_NAME="all"
+DATASET_NAME="all_closed"
 
 # System prompt type ("no_sys_prompt", "really_1x", "really_2x", "really_3x", "really_4x")
 export SYSTEM_PROMPT_TYPE="no_sys_prompt"
@@ -338,7 +336,11 @@ echo $port
 # 1. Regular models
 for MODEL_NAME in "${MODEL_NAMES[@]}"; do
     for CHAT_FLAG in "${CHAT_FLAGS[@]}"; do
-        python -m scripts.benchmark generate ${MODEL_NAME} --use_chat_template $CHAT_FLAG --num_gpus $NUM_GPUS --dataset_name $DATASET_NAME;
+        pixi run -e vllm \
+        python -m scripts.benchmark generate ${MODEL_NAME} \
+            --use_chat_template $CHAT_FLAG \
+            --num_gpus $NUM_GPUS \
+            --dataset_name $DATASET_NAME;
     done
 done
 

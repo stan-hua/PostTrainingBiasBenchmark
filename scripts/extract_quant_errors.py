@@ -273,7 +273,7 @@ class QuantizationErrorAnalyzer:
             debug_info['weight_shape'] = tuple(qweight.shape)
 
             # Get group_size from module if available, otherwise use default
-            quant_config = self.quantization_config or {}
+            quant_config = self.quantized_config or {}
             group_size = quant_config.get('group_size', 128)
 
             # Dequantize
@@ -358,15 +358,17 @@ class QuantizationErrorAnalyzer:
             if hasattr(module, 'weight'):
                 orig_weight_modules.add(name)
 
-        # Collect modules with weights from quantized model
-        for name, module in quant_modules.items():
-            # SPECIAL CASE: AutoAWQ
-            if (isinstance(self.quantized_model, dict) and
-                    all([f"{name}.{k}" in quant_modules for k in ['qweight', 'scales', 'qzeros']])):
-                quant_weight_modules.add(name)
-            # CASE: Any other quantization method
-            elif self._has_weights(module):
-                quant_weight_modules.add(name)
+        # SPECIAL CASE: AutoAWQ
+        if isinstance(self.quantized_model, dict):
+            for name in list(orig_modules.keys()):
+                if all([f"{name}.{k}" in quant_modules for k in ['qweight', 'scales', 'qzeros']]):
+                    quant_weight_modules.add(name)
+        else:
+            # Collect modules with weights from quantized model
+            for name, module in quant_modules.items():
+                # CASE: Any other quantization method
+                if self._has_weights(module):
+                    quant_weight_modules.add(name)
 
         print(f"Original model has {len(orig_weight_modules)} weight modules")
         print(f"Quantized model has {len(quant_weight_modules)} weight modules")

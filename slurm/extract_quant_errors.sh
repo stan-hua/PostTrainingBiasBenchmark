@@ -1,20 +1,20 @@
 #!/bin/bash -l
 #SBATCH --job-name=extract_qerrors                    # Job name
-#SBATCH --account=fc_chenlab
+#SBATCH -o slurm/logs/extract_errors-%j.out
 
+#SBATCH --account=fc_chenlab
 #SBATCH --partition=savio3_htc
 # --gres=gpu:A40:1                      # Request one GPU
 # --qos=a40_gpu3_normal
 # --partition=savio2_1080ti
 #SBATCH --qos=savio_normal
+#SBATCH --nodes=1                         # Number of nodes
+#SBATCH --cpus-per-task=8                 # Number of CPU cores per TASK
 
 #SBATCH --time=04:00:00
-#SBATCH --nodes=1                         # Number of nodes
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8                 # Number of CPU cores per TASK
 #SBATCH --mem=64GB
 # --tmp=8GB
-#SBATCH -o slurm/logs/extract_errors-%j.out
 
 # If you want to do it in the terminal,
 # salloc --job-name=ceb --nodes=1 --gres=gpu:NVIDIA_L40S:1 --cpus-per-task=2 --mem=16G --tmp 8GB

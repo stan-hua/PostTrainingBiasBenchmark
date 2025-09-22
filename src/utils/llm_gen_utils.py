@@ -1,11 +1,11 @@
 # Standard libraries
 import json
 import os
-import replicate
 import requests
 
 # Non-standard libraries
 import google.generativeai as genai
+import replicate
 from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT
 from openai import OpenAI
 from tenacity import retry, wait_random_exponential, stop_after_attempt

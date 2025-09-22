@@ -42,24 +42,24 @@ export HF_DATA_USERNAME="stan-hua"
 ################################################################################
 #                          Discriminative Evaluation                           #
 ################################################################################
-DISCRIM_DATASET_NAMES=(
-    "CEB-Recognition-S"
-    "CEB-Recognition-T"
-    "CEB-Adult"
-    "CEB-Credit"
-    "CEB-Jigsaw"
-    "BBQ"
-    "BiasLens-Choices"
+CLOSED_DATASET_NAMES=(
+    # "CEB-Recognition-S"
+    # "CEB-Recognition-T"
+    # "CEB-Adult"
+    # "CEB-Credit"
+    # "CEB-Jigsaw"
+    # "BBQ"
+    # "BiasLens-Choices"
+    # "IAT"
+    # "SocialStigmaQA"
+    # "StereoSet-Intersentence"
     # "BiasLens-YesNo"
-    "IAT"
-    "SocialStigmaQA"
-    "StereoSet-Intersentence"
     # "StereoSet-Intrasentence"
 )
 
-for DATASET_NAME in "${DISCRIM_DATASET_NAMES[@]}"; do
-    pixi run -e ct \
-        python -m scripts.analysis analyze_discrim_dataset $DATASET_NAME;
+for DATASET_NAME in "${CLOSED_DATASET_NAMES[@]}"; do
+    pixi run -e analysis \
+        python -m scripts.analysis analyze_closed_dataset $DATASET_NAME;
 done
 
 
@@ -69,22 +69,22 @@ done
 ################################################################################
 #                            Generative Evaluation                             #
 ################################################################################
-GEN_DATASET_NAMES=(
-    # "CEB-Continuation-S"
-    # "CEB-Continuation-T"
-    # "CEB-Conversation-S"
-    # "CEB-Conversation-T"
-    # "FMT10K-IM-S"
-    # "FMT10K-IM-T"
+OPEN_DATASET_NAMES=(
+    "CEB-Continuation-S"
+    "CEB-Continuation-T"
+    "CEB-Conversation-S"
+    "CEB-Conversation-T"
+    "FMT10K-IM-S"
+    "FMT10K-IM-T"
+    "BiasLens-GenWhy"
     # "BOLD"
-    # "BiasLens-GenWhy"
     # "DoNotAnswer-S"
     # "DoNotAnswer-T"
 )
 
-for DATASET_NAME in "${GEN_DATASET_NAMES[@]}"; do
-    pixi run -e ct \
-        python -m scripts.analysis analyze_gen_dataset $DATASET_NAME;
+for DATASET_NAME in "${OPEN_DATASET_NAMES[@]}"; do
+    pixi run -e analysis \
+        python -m scripts.analysis analyze_open_dataset $DATASET_NAME;
 done
 
 

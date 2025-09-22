@@ -75,6 +75,12 @@ VLLM_RENAME_KWARGS = {
 # Batch size to pass multiple inputs
 BATCH_SIZE = 16
 
+# HuggingFace containing stored models
+# HF name where models are stored
+HF_DATA_USERNAME = os.environ["HF_DATA_USERNAME"]
+assert HF_DATA_USERNAME, ("Please set HF_DATA_USERNAME environment variable "
+    "with HuggingFace username, where models are stored")
+
 
 ################################################################################
 #                                   Classes                                    #
@@ -1393,6 +1399,11 @@ def extract_model_path_or_name(model_path_or_name, model_provider="vllm", use_ch
     # If using chat template, append "-chat" to model name
     if use_chat_template:
         model_name += "-chat"
+
+    # If model path doesn't contain "/", assume it's stored in the pre-configured HF name
+    if "/" not in model_path:
+        LOGGER.info(f"'/' not present in `model_path`! Assuming stored in `{HF_DATA_USERNAME}`")
+        model_path = f"{HF_DATA_USERNAME}/{model_path}"
 
     return model_name, model_path
 

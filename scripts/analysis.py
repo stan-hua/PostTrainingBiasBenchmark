@@ -345,9 +345,9 @@ def get_huggingface_paths():
 ################################################################################
 #                               Dataset Analysis                               #
 ################################################################################
-def analyze_discrim_dataset(dataset_name="StereoSet-Intersentence", skip_plots=False):
+def analyze_closed_dataset(dataset_name="StereoSet-Intersentence", skip_plots=False):
     """
-    Perform analysis on the given discriminative dataset.
+    Perform analysis on the given a closed dataset.
 
     Parameters
     ----------
@@ -630,8 +630,7 @@ def analyze_discrim_dataset(dataset_name="StereoSet-Intersentence", skip_plots=F
     if not os.path.exists(curr_save_path):
         LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Score Difference - Unquantized vs. Quantized Model:")
         df_sig = groupby_permutation_test(
-            df_valid[filter_cols], groupby_cols, func,
-            *[f"res_probs{s}" for s in ["_base", "_modified"]],
+            df_valid[filter_cols], groupby_cols, metric_func, *required_cols[:2],
             parallel_groups=True,
         )
         df_sig.to_csv(curr_save_path, index=False)
@@ -672,22 +671,46 @@ def analyze_discrim_dataset(dataset_name="StereoSet-Intersentence", skip_plots=F
     #     df_agg_metrics.to_csv(agg_metrics_save_path, index=False)
 
 
-def analyze_gen_dataset(dataset_name="CEB-Continuation-S"):
+def analyze_open_dataset(dataset_name="CEB-Continuation"):
+    """
+    Perform analysis on the given open-ended dataset (aggregated).
+
+    Parameters
+    ----------
+    dataset_name : str
+        Name of open dataset
+    """
     LOGGER.info(f"[{dataset_name}] Beginning analysis!")
 
-    LOGGER.info(f"[{dataset_name}] Loading pairwise differences...")
-    df_valid = supp_load_pairwise_differences([dataset_name])
-    LOGGER.info(f"[{dataset_name}] Loading pairwise differences...DONE")
+    LOGGER.info(f"[{dataset_name}] Loading...")
+    df_valid = load_open_sample_change_values(dataset_name)
+    LOGGER.info(f"[{dataset_name}] Loading...DONE")
 
     # Print models used
     LOGGER.info(f"\n[{dataset_name}] Models Used:")
     LOGGER.info(json.dumps(df_valid.groupby("model_base")["model_modified"].unique().map(sorted).to_dict(), indent=4))
 
-    # Identify cases where the response flipped
-    flipped_mask = df_valid["res_base"] != df_valid["res_modified"]
-    df_valid["Flipped"] = flipped_mask
-    LOGGER.info(f"\n[{dataset_name}] Perc. of Responses Flipped: {prop_to_perc(flipped_mask.mean())}")
+    ############################################################################
+    #                 Bootstrap Aggregate Bias Score Diff                      #
+    ############################################################################
+    # identify metric function
+    metric_func = any_bias_score_dataset
+    required_cols = [f"is_biased{s}" for s in ["_base", "_modified"]]
+    groupby_cols = ["model_base", "model_modified", "social_axis"]
 
+    # Create biased columns
+    df_valid["is_biased_base"] = ~df_valid["eval_llama-is_safe_base"]
+    df_valid["is_biased_modified"] = ~df_valid["eval_llama-is_safe_modified"]
+
+    # 1. Permutation-based significance test
+    curr_save_path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "bootstrap-bias_score_diff-significance.csv")
+    if not os.path.exists(curr_save_path):
+        LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Score Difference - Unquantized vs. Quantized Model:")
+        df_sig = groupby_permutation_test(
+            df_valid, groupby_cols, metric_func, *required_cols[:2],
+            parallel_groups=True,
+        )
+        df_sig.to_csv(curr_save_path, index=False)
 
 
 # Additional Supplementary
@@ -4547,13 +4570,12 @@ def groupby_permutation_test(
     # Ensure groupby_cols is a list for consistent handling
     if isinstance(groupby_cols, str):
         groupby_cols = [groupby_cols]
+    
     grouped = df.groupby(groupby_cols)
 
-    # Collect results for all groups
-    group_results = []
-
-    # Serial processing
+    # CASE 1: Serial processing
     if not parallel_groups:
+        group_results = []
         for group_name, group_df in tqdm(grouped, desc="Testing groups"):
             # Add group information to result
             curr_result = {}
@@ -4570,31 +4592,55 @@ def groupby_permutation_test(
                 group_df, metric_func, unquant_col, quant_col, n_iter, **kwargs
             ))
             group_results.append(curr_result)
-    # Parallel processing
+            
+    # CASE 2: Parallel processing
     else:
         groups_list = list(grouped)
-        print(f"Parallelizing permutation tests across {len(groups_list)} groups using {NUM_WORKERS} workers...")
-
+        
+        # Filter out groups that are too small
+        valid_groups = [(name, df_group) for name, df_group in groups_list if len(df_group) >= min_n_group]
+        
+        print(f"Parallelizing permutation tests across {len(valid_groups)} groups using {NUM_WORKERS} workers...")
+        
+        group_results = []
+        
+        # Use ProcessPoolExecutor to process groups in parallel
         with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            # Dictionary to hold futures, mapped back to group names and sample counts
             futures = {
                 executor.submit(
-                    permutation_test_single_group,
-                    group_df, metric_func, unquant_col, quant_col, n_iter, **kwargs
+                    permutation_test_single_group,  # Function to run in worker
+                    group_df,                       # The group DataFrame
+                    metric_func,                    # Metric function
+                    unquant_col,                    # Unquantized column
+                    quant_col,                      # Quantized column
+                    n_iter,                         # Number of iterations
+                    **kwargs                        # Additional kwargs
                 ): (group_name, len(group_df))
-                for group_name, group_df in groups_list if len(group_df) >= min_n_group
+                for group_name, group_df in valid_groups
             }
 
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Processing groups"):
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Processing groups in parallel"):
                 group_name, num_samples = futures[future]
-
+                
                 # Add group information to result
                 curr_result = {}
                 for i, col in enumerate(groupby_cols):
                     curr_result[col] = group_name[i] if isinstance(group_name, (list, tuple)) else group_name
                 curr_result.update({'n_samples': num_samples})
-
+                
+                # Get the permutation test results
                 curr_result.update(future.result())
                 group_results.append(curr_result)
+        
+        # Add back the small groups that were skipped
+        small_groups = [(name, df_group) for name, df_group in groups_list if len(df_group) < min_n_group]
+        for group_name, group_df in small_groups:
+            curr_result = {}
+            for i, col in enumerate(groupby_cols):
+                curr_result[col] = group_name[i] if isinstance(group_name, (list, tuple)) else group_name
+            curr_result.update({'n_samples': len(group_df)})
+            group_results.append(curr_result)
 
     if not group_results:
         return pd.DataFrame()
@@ -4606,14 +4652,26 @@ def groupby_permutation_test(
     if correction_method is None:
         return df_results
 
-    # Apply multiple comparisons correction
-    raw_p_values = df_results['p_value'].values
+    # Apply multiple comparisons correction only to groups with valid p-values
+    valid_mask = df_results['p_value'].notna() if 'p_value' in df_results.columns else pd.Series([False] * len(df_results))
+    
+    if valid_mask.sum() == 0:
+        return df_results
+        
+    raw_p_values = df_results.loc[valid_mask, 'p_value'].values
+    
     try:
         reject, p_adjusted, _, _ = multipletests(raw_p_values, method=correction_method, alpha=alpha)
-        df_results['adjusted_p_value'] = p_adjusted
-        df_results['significant'] = reject
+        
+        # Initialize columns with NaN
+        df_results['adjusted_p_value'] = None
+        df_results['significant'] = False
         df_results['correction_method'] = correction_method
         df_results['alpha'] = alpha
+        
+        # Fill in the valid results
+        df_results.loc[valid_mask, 'adjusted_p_value'] = p_adjusted
+        df_results.loc[valid_mask, 'significant'] = reject
 
         # print(f"\nMultiple Comparisons Summary:")
         # print(f"Total comparisons: {len(raw_p_values)}")
@@ -4624,7 +4682,7 @@ def groupby_permutation_test(
         df_results['adjusted_p_value'] = raw_p_values
         df_results['significant'] = raw_p_values < alpha
 
-    return df_results.sort_values('adjusted_p_value')
+    return df_results.sort_values('adjusted_p_value', na_position='last')
 
 
 def permutation_test_single_group(group_df, metric_func, unquant_col, quant_col, n_iter, **kwargs):
@@ -4651,51 +4709,27 @@ def permutation_test_single_group(group_df, metric_func, unquant_col, quant_col,
     dict
         Dictionary with observed_unquant, observed_quant, observed_diff, p_value
     """
-
-    unquant_responses = group_df[unquant_col].values
-    quant_responses = group_df[quant_col].values
-
-    # Prepare kwargs for metric function (extract relevant columns)
-    metric_kwargs = {}
-    for key, value in kwargs.items():
-        if isinstance(value, str) and value in group_df.columns:
-            metric_kwargs[key] = group_df[value].values
-        else:
-            metric_kwargs[key] = value
-
     # Compute observed metrics
-    observed_unquant = metric_func(unquant_responses, **metric_kwargs)
-    observed_quant = metric_func(quant_responses, **metric_kwargs)
+    observed_unquant = metric_func(group_df, col_suffix="_base", **kwargs)
+    observed_quant = metric_func(group_df, col_suffix="_modified", **kwargs)
     observed_diff = observed_unquant - observed_quant
 
     ############################################################################
     #                      Permutation Bootstrap Test                          #
     ############################################################################
     null_diffs = []
+    unquant_responses = group_df[unquant_col].values
+    quant_responses = group_df[quant_col].values
     for _ in range(n_iter):
         # Under null: randomly swap unquant/quant responses for each sample
-        swap_mask = np.random.binomial(1, 0.5, size=len(unquant_responses)).astype(bool)
-
-        pseudo_unquant = np.where(swap_mask, quant_responses, unquant_responses)
-        pseudo_quant = np.where(swap_mask, unquant_responses, quant_responses)
-
-        # Bootstrap sample (maintain pairing)
-        boot_indices = np.random.choice(len(group_df), size=len(group_df), replace=True)
-
-        boot_pseudo_unquant = pseudo_unquant[boot_indices]
-        boot_pseudo_quant = pseudo_quant[boot_indices]
-
-        # Bootstrap kwargs
-        boot_metric_kwargs = {}
-        for key, value in metric_kwargs.items():
-            if isinstance(value, np.ndarray) and len(value) == len(group_df):
-                boot_metric_kwargs[key] = value[boot_indices]
-            else:
-                boot_metric_kwargs[key] = value
+        swap_mask = np.random.binomial(1, 0.5, size=len(group_df)).astype(bool)
+        group_df[unquant_col] = np.where(swap_mask, quant_responses, unquant_responses)
+        group_df[quant_col] = np.where(swap_mask, unquant_responses, quant_responses)
 
         # Compute null difference
-        null_unquant = metric_func(boot_pseudo_unquant, **boot_metric_kwargs)
-        null_quant = metric_func(boot_pseudo_quant, **boot_metric_kwargs)
+        boot_indices = np.random.choice(len(group_df), size=len(group_df), replace=True)
+        null_unquant = metric_func(group_df.iloc[boot_indices], col_suffix="_base", **kwargs)
+        null_quant = metric_func(group_df.iloc[boot_indices], col_suffix="_modified", **kwargs)
         null_diffs.append(null_unquant - null_quant)
 
     # Two-tailed p-value
@@ -4781,37 +4815,17 @@ def compute_cohens_d_point_estimate(df, metric_func, unquant_col, quant_col, **k
     float
         Cohen's d point estimate, or np.nan if cannot be computed
     """
-    # Prepare kwargs for metric function (extract relevant columns)
-    metric_kwargs = {}
-    for key, value in kwargs.items():
-        if isinstance(value, str) and value in df.columns:
-            metric_kwargs[key] = df[value].values
-        else:
-            metric_kwargs[key] = value
-    
     # Detect metric type by trying single-row computation
     try:
-        single_row = df.iloc[:1]
-        single_unquant = single_row[unquant_col].values
-        single_kwargs = {}
-        for key, value in metric_kwargs.items():
-            if isinstance(value, np.ndarray) and len(value) == len(df):
-                single_kwargs[key] = value[:1]
-            else:
-                single_kwargs[key] = value
-        
-        _ = metric_func(single_unquant, **single_kwargs)
+        _ = metric_func(df.iloc[:[1]], col_suffix="_base", **kwargs)
         metric_type = "individual"
+        return compute_cohens_d_individual_direct(df, metric_func, **kwargs)
     except:
         metric_type = "group"
-    
-    if metric_type == "individual":
-        return compute_cohens_d_individual_direct(df, metric_func, unquant_col, quant_col, **metric_kwargs)
-    else:
-        return compute_cohens_d_group_bootstrap(df, metric_func, unquant_col, quant_col, **metric_kwargs)
+        return compute_cohens_d_group_bootstrap(df, metric_func, **kwargs)
 
 
-def compute_cohens_d_individual_direct(df, metric_func, unquant_col, quant_col, **metric_kwargs):
+def compute_cohens_d_individual_direct(df, metric_func, **kwargs):
     """
     Compute Cohen's d for individual-level metrics using metric function directly.
     
@@ -4821,11 +4835,7 @@ def compute_cohens_d_individual_direct(df, metric_func, unquant_col, quant_col, 
         Data for single group
     metric_func : callable
         Metric function that can be computed per-question
-    unquant_col : str
-        Column name with unquantized responses
-    quant_col : str
-        Column name with quantized responses
-    **metric_kwargs : dict
+    **kwargs : dict
         Prepared keyword arguments for metric_func
         
     Returns
@@ -4839,25 +4849,12 @@ def compute_cohens_d_individual_direct(df, metric_func, unquant_col, quant_col, 
         quant_values = []
         
         for i in range(len(df)):
-            # Extract single-question data
-            single_unquant = df[unquant_col].iloc[i:i+1].values
-            single_quant = df[quant_col].iloc[i:i+1].values
-            
-            # Extract corresponding kwargs for this question
-            single_kwargs = {}
-            for key, value in metric_kwargs.items():
-                if isinstance(value, np.ndarray) and len(value) == len(df):
-                    single_kwargs[key] = value[i:i+1]
-                else:
-                    single_kwargs[key] = value
-            
             # Compute metric for this individual question
-            unquant_metric = metric_func(single_unquant, **single_kwargs)
-            quant_metric = metric_func(single_quant, **single_kwargs)
-            
+            unquant_metric = metric_func(df.iloc[[i]], col_suffix="_base", **kwargs)
+            quant_metric = metric_func(df.iloc[[i]], col_suffix="_modified", **kwargs)
             unquant_values.append(unquant_metric)
             quant_values.append(quant_metric)
-        
+
         unquant_values = np.array(unquant_values)
         quant_values = np.array(quant_values)
         
@@ -4875,7 +4872,7 @@ def compute_cohens_d_individual_direct(df, metric_func, unquant_col, quant_col, 
         return np.nan
 
 
-def compute_cohens_d_group_bootstrap(df, metric_func, unquant_col, quant_col, n_bootstrap=200, **metric_kwargs):
+def compute_cohens_d_group_bootstrap(df, metric_func, n_bootstrap=200, **kwargs):
     """
     Compute Cohen's d for group-level metrics using bootstrap approach.
     
@@ -4885,13 +4882,9 @@ def compute_cohens_d_group_bootstrap(df, metric_func, unquant_col, quant_col, n_
         Data for single group
     metric_func : callable
         Metric function that requires entire group for computation
-    unquant_col : str
-        Column name with unquantized responses
-    quant_col : str
-        Column name with quantized responses
     n_bootstrap : int, optional
         Number of bootstrap samples to generate, by default 200
-    **metric_kwargs : dict
+    **kwargs : dict
         Prepared keyword arguments for metric_func
         
     Returns
@@ -4906,25 +4899,12 @@ def compute_cohens_d_group_bootstrap(df, metric_func, unquant_col, quant_col, n_
         try:
             # Bootstrap sample
             boot_indices = np.random.choice(len(df), size=len(df), replace=True)
-            
-            boot_unquant_responses = df[unquant_col].iloc[boot_indices].values
-            boot_quant_responses = df[quant_col].iloc[boot_indices].values
-            
-            # Bootstrap the kwargs
-            boot_kwargs = {}
-            for key, value in metric_kwargs.items():
-                if isinstance(value, np.ndarray) and len(value) == len(df):
-                    boot_kwargs[key] = value[boot_indices]
-                else:
-                    boot_kwargs[key] = value
-            
+
             # Compute group-level metrics
-            unquant_metric = metric_func(boot_unquant_responses, **boot_kwargs)
-            quant_metric = metric_func(boot_quant_responses, **boot_kwargs)
-            
+            unquant_metric = metric_func(df.iloc[boot_indices], col_suffix="_base", **kwargs)
+            quant_metric = metric_func(df.iloc[boot_indices], col_suffix="_modified", **kwargs)
             unquant_metrics.append(unquant_metric)
             quant_metrics.append(quant_metric)
-            
         except Exception:
             continue
     
