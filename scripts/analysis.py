@@ -371,7 +371,7 @@ def get_huggingface_paths():
 ################################################################################
 #                               Dataset Analysis                               #
 ################################################################################
-def analyze_closed_dataset(dataset_name="StereoSet-Intersentence", skip_plots=False):
+def cache_closed_dataset_metrics(dataset_name="StereoSet-Intersentence", skip_plots=False):
     """
     Perform analysis on the given a closed dataset.
 
@@ -697,7 +697,7 @@ def analyze_closed_dataset(dataset_name="StereoSet-Intersentence", skip_plots=Fa
     #     df_agg_metrics.to_csv(agg_metrics_save_path, index=False)
 
 
-def analyze_open_dataset(dataset_name="CEB-Continuation"):
+def cache_open_dataset_tests(dataset_name="CEB-Continuation"):
     """
     Perform analysis on the given open-ended dataset (aggregated).
 
@@ -816,7 +816,7 @@ def analyze_de():
 
 
 ################################################################################
-#                                   Results                                    #
+#                       Loading Cached Metrics Functions                       #
 ################################################################################
 def load_closed_dataset_cached_agg_metrics(dataset_name, keep_w8a8=False):
     """
@@ -849,7 +849,7 @@ def load_closed_dataset_cached_agg_metrics(dataset_name, keep_w8a8=False):
 
     # Merge tables
     df_data = pd.merge(
-        df_data, df_sig_test,
+        df_diffs, df_sig_test,
         on=["model_base", "model_modified", "social_axis"],
         how="inner",
     )
@@ -960,7 +960,7 @@ def load_open_dataset_agg_tests(dataset_name):
         return df_data
 
     # Load permutation test results
-    df_sig_test = pd.read_csv(os.path.join(
+    df_data = pd.read_csv(os.path.join(
         config.DIR_ANALYSIS, f"{dataset_name}",
         "bootstrap-bias_score_diff-significance.csv")
     )
@@ -1076,6 +1076,9 @@ def groupby_avg(df, groupby_col, value_col="is_significant", num_round=4, **extr
     return df_curr
 
 
+################################################################################
+#                           Generate Figures/Tables                            #
+################################################################################
 # Figure 1. + Supplementary Table 1.
 def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.01):
     # Accumulate p-values across models

@@ -48,18 +48,20 @@ CLOSED_DATASET_NAMES=(
     # "CEB-Adult"
     # "CEB-Credit"
     # "CEB-Jigsaw"
-    # "BBQ"
+    "BBQ"
     # "BiasLens-Choices"
-    # "IAT"
-    # "SocialStigmaQA"
+    "IAT"
+    "SocialStigmaQA"
     # "StereoSet-Intersentence"
-    # "BiasLens-YesNo"
-    # "StereoSet-Intrasentence"
+
+    # The following are deprecated:
+    # # "BiasLens-YesNo"
+    # # "StereoSet-Intrasentence"
 )
 
 for DATASET_NAME in "${CLOSED_DATASET_NAMES[@]}"; do
     pixi run -e analysis \
-        python -m scripts.analysis analyze_closed_dataset $DATASET_NAME;
+        python -m scripts.analysis cache_closed_dataset_metrics $DATASET_NAME;
 done
 
 
@@ -70,21 +72,23 @@ done
 #                            Generative Evaluation                             #
 ################################################################################
 OPEN_DATASET_NAMES=(
-    "CEB-Continuation-S"
-    "CEB-Continuation-T"
-    "CEB-Conversation-S"
-    "CEB-Conversation-T"
-    "FMT10K-IM-S"
-    "FMT10K-IM-T"
-    "BiasLens-GenWhy"
-    # "BOLD"
-    # "DoNotAnswer-S"
-    # "DoNotAnswer-T"
+    # "CEB-Continuation-S"
+    # "CEB-Continuation-T"
+    # "CEB-Conversation-S"
+    # "CEB-Conversation-T"
+    # "FMT10K-IM-S"
+    # "FMT10K-IM-T"
+    # "BiasLens-GenWhy"
+
+    # The following are deprecated:
+    # # "BOLD"
+    # # "DoNotAnswer-S"
+    # # "DoNotAnswer-T"
 )
 
 for DATASET_NAME in "${OPEN_DATASET_NAMES[@]}"; do
     pixi run -e analysis \
-        python -m scripts.analysis analyze_open_dataset $DATASET_NAME;
+        python -m scripts.analysis cache_open_dataset_tests $DATASET_NAME;
 done
 
 
