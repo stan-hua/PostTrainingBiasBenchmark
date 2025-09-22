@@ -538,10 +538,6 @@ def extract_model_path_or_name(model_path_or_name, model_provider="vllm", use_ch
             f"\nValid options: {MODEL_INFO['online_model']}"
         )
 
-    # If using chat template, append "-chat" to model name
-    if use_chat_template:
-        model_name += "-chat"
-
     return model_name, model_path
 
 

@@ -1396,10 +1396,6 @@ def extract_model_path_or_name(model_path_or_name, model_provider="vllm", use_ch
             f"\nValid options: {MODEL_INFO['online_model']}"
         )
 
-    # If using chat template, append "-chat" to model name
-    if use_chat_template:
-        model_name += "-chat"
-
     # If model path doesn't contain "/", assume it's stored in the pre-configured HF name
     if "/" not in model_path:
         LOGGER.info(f"'/' not present in `model_path`! Assuming stored in `{HF_DATA_USERNAME}`")
