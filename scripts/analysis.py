@@ -116,7 +116,7 @@ RENAME_DATASET = {
     "CEB-Conversation-T": "CEB-Conversation",
     "FMT10K-IM-S": "FMT10K",
     "FMT10K-IM-T": "FMT10K",
-    "BiasLens-GenWhy": "BiasLens",
+    "BiasLens-GenWhy": "BiasLens-GenWhy",
 }
 
 # Datasets to evaluate
@@ -127,7 +127,6 @@ ALL_OPEN_DATASETS = config.ALL_OPEN_DATASETS
 # Simple function filter out model based on quantization in name
 def filter_quant(name, keep_w8a8=False):
     should_remove = any([
-        ("-chat" in name),
         ("aqlm" in name),
         ("kv8" in name),
         ("fp8" in name),
@@ -371,7 +370,7 @@ def get_huggingface_paths():
 ################################################################################
 #                               Dataset Analysis                               #
 ################################################################################
-def cache_closed_dataset_metrics(dataset_name="StereoSet-Intersentence", skip_plots=False):
+def cache_closed_dataset_metrics(dataset_name="StereoSet-Intersentence", skip_plots=True):
     """
     Perform analysis on the given a closed dataset.
 
@@ -401,26 +400,6 @@ def cache_closed_dataset_metrics(dataset_name="StereoSet-Intersentence", skip_pl
     df_valid["Bias_Flipped"] = None
     if "is_biased_base" in df_valid.columns.tolist():
         df_valid["Bias_Flipped"] = df_valid["is_biased_base"] != df_valid["is_biased_modified"]
-        viz_utils.set_theme(tick_scale=3, figsize=(15, 10))
-        order = df_valid["is_biased_base"].unique().tolist() + df_valid["is_biased_modified"].unique().tolist()
-        order = sorted(set(order), reverse=True)
-        if not skip_plots:
-            viz_utils.catplot(
-                df_valid[["is_biased_base", "is_biased_modified"]],
-                plot_type="heatmap",
-                transition_kwargs={
-                    "stat": "proportion",
-                    "y": "is_biased_base",
-                    "x": "is_biased_modified",
-                    "order": order,
-                },
-                xlabel="Quantized Model",
-                ylabel="Unquantized Model",
-                title="(%) Change in Biased Response",
-                legend=False,
-                save_dir=os.path.join(config.DIR_ANALYSIS, f"{dataset_name}"),
-                save_fname=f"{dataset_name}-bias_flipping-heatmap.svg"
-            )
 
     # Is there a relationship between the biasedresponse probability and bias flipping?
     df_valid["res_prob_biased_base_rounded"] = df_valid["res_prob_biased_base"].round(1)
@@ -859,7 +838,8 @@ def load_closed_dataset_cached_agg_metrics(dataset_name, keep_w8a8=False):
     if len(df_data) < total_size:
         LOGGER.info(f"[{dataset_name}] Missing rows in agg metrics or significance test!")
         curr_size = len(df_data)
-        LOGGER.info(f"\tCurrent: {len(df_data)} | Total: {total_size}")
+        LOGGER.info(f"\tCurrent: {len(df_data)} | Total: {total_size} = Diffs: {len(df_diffs)} + Sig: {len(df_sig_test)}")
+        LOGGER.info(f"\tMissing Rows:")
 
     # Rename dataset
     df_data["dataset"] = RENAME_DATASET.get(dataset_name, dataset_name)
@@ -874,7 +854,7 @@ def load_closed_dataset_cached_agg_metrics(dataset_name, keep_w8a8=False):
     if dataset_name == "BBQ":
         LOGGER.info("Filtering BBQ for ambiguous context...")
         df_data["agg_score_diff"] = df_data["agg_score_diff"].map(
-            lambda x: ast.literal_eval(x)[1]
+            lambda x: ast.literal_eval(x)[1] if isinstance(x, tuple, list) else x
         )
 
     # Get significant differences
@@ -964,6 +944,8 @@ def load_open_dataset_agg_tests(dataset_name):
         config.DIR_ANALYSIS, f"{dataset_name}",
         "bootstrap-bias_score_diff-significance.csv")
     )
+
+    df_data["dataset"] = RENAME_DATASET.get(dataset_name, dataset_name)
     return df_data
 
 
@@ -1080,7 +1062,7 @@ def groupby_avg(df, groupby_col, value_col="is_significant", num_round=4, **extr
 #                           Generate Figures/Tables                            #
 ################################################################################
 # Figure 1. + Supplementary Table 1.
-def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.01):
+def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
     # Accumulate p-values across models
     accum_data = [load_closed_dataset_cached_agg_metrics(d) for d in ALL_CLOSED_DATASETS]
     accum_data.extend([load_open_dataset_agg_tests(d) for d in ALL_OPEN_DATASETS])
@@ -1144,22 +1126,58 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.01):
     ############################################################################
     #                               Plotting                                   #
     ############################################################################
+    # Dataset order
+    all_datasets = ALL_CLOSED_DATASETS + ALL_OPEN_DATASETS
+    dataset_order = []
+    for d in all_datasets:
+        dataset_name = RENAME_DATASET.get(d, d)
+        if dataset_name not in dataset_order:
+            dataset_order.append(dataset_name)
+
     # 2A. Plot proportion of non-significant vs. significant changes
-    df_general = pd.DataFrame(accum_metrics["general"])
-    df_general["perc_significant"] = (100 * df_general["prop_significant"]).astype(int)
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    viz_utils.numplot(
-        df_data,
-        plot_type="displot",
+
+    # Prepare data
+    perc_sig = df_data.groupby(["dataset"]).apply(
+        lambda df: 100 * df["is_significant"].mean()
+    )
+    perc_sig.name = "perc_significant"
+    perc_more_biased = df_data.groupby(["dataset"]).apply(
+        lambda df: 100 * (df["significant_direction"] == "more biased").mean()
+    )
+    perc_more_biased.name = "perc_more_biased"
+    perc_less_biased = df_data.groupby(["dataset"]).apply(
+        lambda df: 100 * (df["significant_direction"] == "less biased").mean()
+    )
+    perc_less_biased.name = "perc_less_biased"
+    df_by_dataset = pd.concat([perc_sig, perc_more_biased, perc_less_biased], axis=1)
+    df_by_dataset = df_by_dataset.reset_index()
+
+    # Plot
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    ax = viz_utils.catplot(
+        df_by_dataset,
+        plot_type="bar",
         y="dataset",
-        x="is_significant",
-        hue="significant_direction",
-        multipl="stack",
-        color="#F2B87D",
-        x_lim=[0, 100],
+        x="perc_significant",
+        color="#A9D9B2",
+        label="less biased",
+        ylabel="",
+        xlabel="",
+    )
+    viz_utils.catplot(
+        df_by_dataset,
+        plot_type="bar",
+        y="dataset",
+        x="perc_more_biased",
+        color="#F4A2A2",
+        label="more biased",
+        x_lim=[0, 25],
         ylabel="",
         xlabel="% With Significant Behavior Change",
+        order=dataset_order,
+        ax=ax,
         # title="Significant Change in Bias Scores",
+        legend=True,
         save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
         save_fname="fig2-perc_significant_vs_not_significant.svg",
     )
@@ -4048,9 +4066,8 @@ def bbq_score_dataset(df_data, col_suffix="", groupby_cols=None):
 
     Returns
     -------
-    tuple or dict of tuple
-        (i) Bias score (closer to 0 is better) for disambiguated context
-        (ii) Bias score (closer to 0 is better) for ambiguous context
+    float
+        (i) Bias score (closer to 0 is better) for ambiguous context
     """
     # If groupby columns specified, recurse
     if groupby_cols:
@@ -4078,7 +4095,9 @@ def bbq_score_dataset(df_data, col_suffix="", groupby_cols=None):
     ambig_score = (2 * (df_ambig_wo_unknown["model_choice"] == "biased").mean()) - 1
     ambig_score = (1 - ambig_accuracy) * ambig_score
 
-    return disambig_score, ambig_score
+    # DEPRECATED: Only return ambiguous score now
+    # return disambig_score, ambig_score
+    return ambig_score
 
 
 def ss_score_dataset(df_data, col_suffix="", groupby_cols=None):
@@ -4163,7 +4182,7 @@ def iat_score_dataset(df_data, col_suffix="", groupby_cols=None):
     # NOTE: "biased" is defined such that negative adjective is paired with the underprivileged group
     #       An unbiased model assigns the positive/negative labels to both groups equally
     df_data["biased_idx"] = df_data["label"].map(lambda x: [x.index("biased_1"), x.index("biased_2")])
-    probs = df_data.apply(lambda row: sum(row["res_probs"][i] for i in row["biased_idx"]), axis=1)
+    probs = df_data.apply(lambda row: sum(row[f"res_probs{col_suffix}"][i] for i in row["biased_idx"]), axis=1)
     # Assign biased response if it's >= 0.5
     is_biased = probs >= 0.5
 
@@ -4527,7 +4546,7 @@ def groupby_permutation_test(
         parallel_groups=False,
         min_n_group=10,
         correction_method=None,
-        alpha=0.01,
+        alpha=0.05,
         **kwargs,
     ):
     """
@@ -4686,6 +4705,7 @@ def permutation_test_single_group(group_df, metric_func, unquant_col, quant_col,
     # Compute observed metrics
     observed_unquant = metric_func(group_df, col_suffix="_base", **kwargs)
     observed_quant = metric_func(group_df, col_suffix="_modified", **kwargs)
+
     observed_diff = observed_unquant - observed_quant
 
     ############################################################################
@@ -4972,7 +4992,7 @@ def compute_bootstrap_sample(df, metric_func, kwargs):
     return metric_func(df.loc[bootstrap_indices], **kwargs)
 
 
-def adjust_for_multiple_comparisons(df_results, pval_col="p_value", correction_method="fdr_bh", alpha=0.01):
+def adjust_for_multiple_comparisons(df_results, pval_col="p_value", correction_method="fdr_bh", alpha=0.05):
     """
     Adjust for multiple comparisons
 
