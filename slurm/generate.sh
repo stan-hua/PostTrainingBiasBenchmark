@@ -4,11 +4,19 @@
 
 #SBATCH --account=fc_chenlab
 #SBATCH --nodes=1                         # Number of nodes
-#SBATCH --cpus-per-task=8                 # Number of CPU cores per TASK
-#SBATCH --partition=savio3_gpu
-#SBATCH --gres=gpu:A40:1                      # Request one GPU
-#SBATCH --qos=a40_gpu3_normal
+#SBATCH --cpus-per-task=4                 # Number of CPU cores per TASK
 #SBATCH --mem=32GB
+
+# --partition=savio3_gpu
+# --gres=gpu:A40:1                      # Request one GPU
+# --qos=a40_gpu3_normal
+# --gres=gpu:V100:1                      # Request one GPU
+# --qos=v100_gpu3_normal
+
+#SBATCH --partition=savio4_gpu
+#SBATCH --gres=gpu:A5000:1                      # Request one GPU
+#SBATCH --qos=a5k_gpu4_normal
+
 # --tmp=8GB
 #SBATCH --time=1:00:00
 # --begin=now+10hours

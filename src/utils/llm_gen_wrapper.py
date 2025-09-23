@@ -73,7 +73,7 @@ VLLM_RENAME_KWARGS = {
 }
 
 # Batch size to pass multiple inputs
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 
 # HuggingFace containing stored models
 # HF name where models are stored
@@ -1585,6 +1585,14 @@ def extract_choice_geom_prob(choice, prompt_logprobs, tokenizer):
     if prompt_logprobs[0] is None:
         prompt_logprobs = prompt_logprobs[1:]
 
+    # SPECIAL CASE: Some malformed texts end with "[sentence] .". Convert to "."
+    def is_equal(x, y):
+        x = x.strip()
+        y = y.strip()
+        alternate_x = x[:-2] + "." if x.endswith(" .") else x
+        alternate_y = y[:-2] + "." if y.endswith(" .") else y
+        return alternate_x == alternate_y
+
     # Work backwards to reconstruct the added text
     added_text = choice
     reconst_choice = ""
@@ -1598,11 +1606,11 @@ def extract_choice_geom_prob(choice, prompt_logprobs, tokenizer):
         num_prompt_tokens -= 1
 
         # Stop if we've reconstructed the original prompt. Or if we're already too far
-        if added_text.strip() == reconst_choice.strip():
+        if is_equal(added_text, reconst_choice):
             break
 
     # Raise error, if we weren't able to extract the prompt
-    if choice.strip() != reconst_choice.strip():
+    if not is_equal(choice, reconst_choice):
         raise RuntimeError(f"""Reconstructed choice doesn't match original choice!
 
 Original: `{choice}`
