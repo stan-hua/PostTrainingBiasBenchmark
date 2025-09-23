@@ -1324,8 +1324,6 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
 
 # Figure 3
 def change_in_uncertainty():
-    assert False
-    
     accum_probs = []
     for dataset in ALL_CLOSED_DATASETS:
         df_probs_changed = load_closed_dataset_entropy_changes(dataset)
@@ -1335,7 +1333,7 @@ def change_in_uncertainty():
 
     df_data = pd.concat(accum_probs)
     # Rename flipping
-    df_data["flip_status"] = df_data["Flipped"].map(lambda x: "changed" if x else "unchanged")
+    df_data["flip_status"] = df_data["Flipped"].map(lambda x: "response changed" if x else "response unchanged")
 
     # Dataset order
     unique_datasets = df_data["dataset"].unique().tolist()
@@ -1345,37 +1343,35 @@ def change_in_uncertainty():
         if dataset_name not in closed_dataset_order and dataset_name in unique_datasets:
             closed_dataset_order.append(dataset_name)
 
+    # df_curr = df_data[(df_data["normalized_entropy_base"] < 0.8) & (df_data["normalized_entropy_base"] > 0.6)]
+
     ############################################################################
     #                   A. Response Flipping vs. Entropy                       #
     ############################################################################
     plt.close()
-    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
     palette = [
         "#D3A9F5",  # Lavender
         "#FF7F4C",  # Bright Orange
     ]
-    viz_utils.catplot(
-        df_data,
-        plot_type="kde",
-        fill=True,
-        common_norm=False,
-        x="normalized_entropy_base",
-        hue="flip_status",
-        hue_order=["changed", "unchanged"],
-        palette=palette,
-        ylabel="Response Flipping",
-        xlabel="Initial Model Uncertainty",
-        legend=True,
-        # TODO: Determine a good xlim
-        # x_lim=[0, 1],
-        save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-        save_fname="fig3a-flipping_under_uncertainty.svg",
-    )
+    # viz_utils.catplot(
+    #     df_data,
+    #     plot_type="kde",
+    #     fill=True,
+    #     common_norm=False,
+    #     x="normalized_entropy_base",
+    #     hue="flip_status",
+    #     hue_order=["response unchanged", "response changed"],
+    #     palette=palette,
+    #     ylabel="Density",
+    #     xlabel="Initial Model Uncertainty",
+    #     legend=True,
+    #     x_lim=[0, 1],
+    #     save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+    #     save_fname="fig3a-flipping_under_uncertainty.svg",
+    # )
 
-
-    ############################################################################
-    #        B. Entropy Distribution Before and After Quantization             #
-    #############################################################################
+    # Plot for each dataset
     viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
     fig, axs = plt.subplots(len(closed_dataset_order), 1, sharex=True)
     for idx, dataset in enumerate(closed_dataset_order):
@@ -1389,35 +1385,20 @@ def change_in_uncertainty():
                 "left": False
         }}
         if idx == (len(closed_dataset_order) - 1):
-            plot_kwargs["xlabel"] = "Model Uncertainty"
+            plot_kwargs["xlabel"] = "Initial Model Uncertainty"
             plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
             plot_kwargs["legend"] = True
 
-        # 1. Plot unquantized dataset model uncertainty
-        df_base = df_dataset.groupby(["model_base", "idx"]).sample(n=1)
-        viz_utils.catplot(
-            df_base,
-            plot_type="kde", fill=True,
-            color="#FF7F4C",
-            x="normalized_entropy_base",
-            label="original",
-            ylabel="",
-            # TODO: Add x-limits
-            # x_lim=[0, 0.5],
-            ax=axs[idx],
-            **plot_kwargs,
-        )
 
-        # 2. Plot quantized dataset model uncertainty
         viz_utils.catplot(
             df_dataset,
             plot_type="kde", fill=True,
-            color="#6E82B5",
-            x="normalized_entropy_modified",
-            label="after quantization",
-            ylabel="",
-            # TODO: Add x-limits
-            # x_lim=[0, 0.5],
+            x="normalized_entropy_base",
+            hue="flip_status",
+            hue_order=["response unchanged", "response changed"],
+            palette=palette,
+            ylabel=RENAME_DATASET.get(dataset, dataset),
+            x_lim=[0, 1],
             ax=axs[idx],
             **plot_kwargs,
         )
@@ -1432,11 +1413,48 @@ def change_in_uncertainty():
         )
 
     # Save
+    plt.legend()
+    plt.tight_layout()
     fig.subplots_adjust(hspace=0.5)
-    save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig3b-entropy_before_after_quant.svg")
+    save_path = os.path.join(
+        config.DIR_ANALYSIS, "aggregate_metrics",
+        "fig3a-flipping_under_uncertainty.svg",
+    )
     plt.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close()
 
+    ############################################################################
+    #        B. Entropy Distribution Before and After Quantization             #
+    #############################################################################
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    
+    # Prepare data
+    df_base = df_data.drop_duplicates(subset=["model_base", "idx"])[["dataset", "normalized_entropy_base"]]
+    df_base = df_base.rename(columns={"normalized_entropy_base": "Model Uncertainty"})
+    df_base["model_type"] = "original"
+
+    df_modified = df_data[["dataset", "normalized_entropy_modified"]].copy()
+    df_modified = df_modified.rename(columns={"normalized_entropy_modified": "Model Uncertainty"})
+    df_modified["model_type"] = "quantized"
+
+    df_entropy = pd.concat([df_base, df_modified])
+
+    # Uncertainty Before/After Quantization
+    viz_utils.numplot(
+        df_entropy,
+        plot_type="box", showfliers=False, width=0.85,
+        y="dataset",
+        x="Model Uncertainty",
+        hue="model_type",
+        hue_order=["original", "quantized"],
+        palette=["#FF7F4C", "#6E82B5"],
+        ylabel="",
+        xlabel="Model Uncertainty",
+        x_lim=[0, 1],
+        legend=True,
+        save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+        save_fname="fig3b-entropy_before_after_quant.svg",
+    )
 
     ############################################################################
     #                        C. RTN W4A16 vs. W8A16                            #
@@ -1465,40 +1483,32 @@ def change_in_uncertainty():
         if idx == (len(closed_dataset_order) - 1):
             plot_kwargs["xlabel"] = "Change in Model Uncertainty"
             plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
+            plot_kwargs["legend"] = True
 
-        # TODO: Assign a color
-        palette = [
-            "#A9D9B2",  # Pale Green
-            "#FF7F4C",  # Bright Orange
-            "#6E82B5",  # Dusty Blue
-            "#C78E72",  # Muted Clay
-            "#F6D07F",  # Warm Yellow
-        ]
 
-        # 1. Plot change in uncertainty RTN W4A16 dataset model uncertainty
+        # 1. Plot RTN W8A16 change in model uncertainty
         viz_utils.catplot(
-            df_data_w4_dataset,
+            df_data_w8_dataset,
             plot_type="kde", fill=True,
-            color="#C78E72",
             x="norm_entropy_diff",
-            label="RTN W4A16",
-            ylabel="",
-            # TODO: Add x-limits
-            # x_lim=[0, 0.5],
+            color="#6E82B5",
+            label="RTN W8A16",
+            ylabel=RENAME_DATASET.get(dataset, dataset),
+            x_lim=[-0.3, 0.3],
             ax=axs[idx],
             **plot_kwargs,
         )
 
-        # 2. Plot quantized dataset model uncertainty
+
+        # 2. Plot RTN W4A16 change in model uncertainty
         viz_utils.catplot(
-            df_data_w8_dataset,
+            df_data_w4_dataset,
             plot_type="kde", fill=True,
-            color="#A9D9B2",
             x="norm_entropy_diff",
-            label="RTN W8A16",
-            ylabel="",
-            # TODO: Add x-limits
-            # x_lim=[0, 0.5],
+            color="#C78E72",
+            label="RTN W4A16",
+            ylabel=RENAME_DATASET.get(dataset, dataset),
+            x_lim=[-0.3, 0.3],
             ax=axs[idx],
             **plot_kwargs,
         )
@@ -1513,6 +1523,8 @@ def change_in_uncertainty():
         )
 
     # Save
+    plt.legend()
+    plt.tight_layout()
     fig.subplots_adjust(hspace=0.5)
     save_path = os.path.join(
         config.DIR_ANALYSIS, "aggregate_metrics",
