@@ -620,7 +620,7 @@ def heatmap(data, cmap=None, xticktop=True, transition_kwargs=None, **kwargs):
 
     # Set x-axis ticks, if specified
     if xticktop:
-        ax = ax.xaxis.tick_top()
+        ax.xaxis.tick_top()
 
     return ax
 
