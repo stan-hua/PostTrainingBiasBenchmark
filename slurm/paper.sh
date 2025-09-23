@@ -106,7 +106,7 @@ done
 # srun python -m scripts.analysis change_in_response_flipping
 
 # # # Figure 2
-# srun python -m scripts.analysis change_in_probabilities
+# srun python -m scripts.analysis change_in_uncertainty
 
 # # # Figure 3
 # srun python -m scripts.analysis factors_related_to_response_flipping
