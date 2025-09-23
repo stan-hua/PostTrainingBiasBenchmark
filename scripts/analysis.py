@@ -118,6 +118,7 @@ RENAME_DATASET = {
     "FMT10K-IM-T": "FMT10K",
     "BiasLens-GenWhy": "BiasLens-GenWhy",
 }
+REVERSE_DATASET_MAP = {v:k for k,v in RENAME_DATASET.items()}
 
 # Datasets to evaluate
 ALL_CLOSED_DATASETS = config.ALL_CLOSED_DATASETS
@@ -370,7 +371,7 @@ def get_huggingface_paths():
 ################################################################################
 #                               Dataset Analysis                               #
 ################################################################################
-def cache_closed_dataset_metrics(dataset_name="StereoSet-Intersentence", skip_plots=True):
+def cache_closed_dataset_metrics(dataset_name="StereoSet-Intersentence", overwrite=False, skip_plots=True):
     """
     Perform analysis on the given a closed dataset.
 
@@ -623,7 +624,7 @@ def cache_closed_dataset_metrics(dataset_name="StereoSet-Intersentence", skip_pl
 
     # 1. Compute bootstrapped difference in aggregate bias scores
     curr_save_path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "bootstrap-bias_score_diff-metrics.csv")
-    if not os.path.exists(curr_save_path):
+    if not os.path.exists(curr_save_path) and not overwrite:
         LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Score Difference - Unquantized vs. Quantized Model:")
         score_diff = groupby_bootstrap_metric(df_valid[filter_cols], groupby_cols, func, parallel_groups=True)
         df_score_diff = pd.Series(score_diff).reset_index()
@@ -632,7 +633,7 @@ def cache_closed_dataset_metrics(dataset_name="StereoSet-Intersentence", skip_pl
 
     # 2. Permutation-based significance test
     curr_save_path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "bootstrap-bias_score_diff-significance.csv")
-    if not os.path.exists(curr_save_path):
+    if not os.path.exists(curr_save_path) and not overwrite:
         LOGGER.info(f"\n[{dataset_name}] Bootstrapping Bias Score Difference - Unquantized vs. Quantized Model:")
         df_sig = groupby_permutation_test(
             df_valid[filter_cols], groupby_cols, metric_func, *required_cols[:2],
@@ -814,6 +815,10 @@ def load_closed_dataset_cached_agg_metrics(dataset_name, keep_w8a8=False):
         df_data = pd.concat(accum_data).reset_index(drop=True)
         return df_data
 
+    # Map back if simplified name is provided
+    if dataset_name in REVERSE_DATASET_MAP:
+        dataset_name = REVERSE_DATASET_MAP[dataset_name]
+
     # Load bootstrapped difference in agg bias scores
     df_diffs = pd.read_csv(os.path.join(
         config.DIR_ANALYSIS, f"{dataset_name}",
@@ -839,7 +844,6 @@ def load_closed_dataset_cached_agg_metrics(dataset_name, keep_w8a8=False):
         LOGGER.info(f"[{dataset_name}] Missing rows in agg metrics or significance test!")
         curr_size = len(df_data)
         LOGGER.info(f"\tCurrent: {len(df_data)} | Total: {total_size} = Diffs: {len(df_diffs)} + Sig: {len(df_sig_test)}")
-        LOGGER.info(f"\tMissing Rows:")
 
     # Rename dataset
     df_data["dataset"] = RENAME_DATASET.get(dataset_name, dataset_name)
@@ -854,7 +858,7 @@ def load_closed_dataset_cached_agg_metrics(dataset_name, keep_w8a8=False):
     if dataset_name == "BBQ":
         LOGGER.info("Filtering BBQ for ambiguous context...")
         df_data["agg_score_diff"] = df_data["agg_score_diff"].map(
-            lambda x: ast.literal_eval(x)[1] if isinstance(x, tuple, list) else x
+            lambda x: ast.literal_eval(x)[1] if isinstance(x, (tuple, list)) else x
         )
 
     # Get significant differences
@@ -886,6 +890,10 @@ def load_closed_dataset_entropy_changes(dataset_name):
             accum_data.append(load_closed_dataset_entropy_changes(name))
         df_data = pd.concat(accum_data).reset_index(drop=True)
         return df_data
+
+    # Map back if simplified name is provided
+    if dataset_name in REVERSE_DATASET_MAP:
+        dataset_name = REVERSE_DATASET_MAP[dataset_name]
 
     # CASE 2: Single dataset
     path = os.path.join(config.DIR_ANALYSIS, f"{dataset_name}", "probs_diff.csv")
@@ -938,6 +946,10 @@ def load_open_dataset_agg_tests(dataset_name):
             accum_data.append(load_open_dataset_agg_tests(name))
         df_data = pd.concat(accum_data).reset_index(drop=True)
         return df_data
+
+    # Map back if simplified name is provided
+    if dataset_name in REVERSE_DATASET_MAP:
+        dataset_name = REVERSE_DATASET_MAP[dataset_name]
 
     # Load permutation test results
     df_data = pd.read_csv(os.path.join(
@@ -1061,7 +1073,8 @@ def groupby_avg(df, groupby_col, value_col="is_significant", num_round=4, **extr
 ################################################################################
 #                           Generate Figures/Tables                            #
 ################################################################################
-# Figure 1. + Supplementary Table 1.
+# Figure 2.
+# DEPRECATED: Supplementary Table 1.
 def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
     # Accumulate p-values across models
     accum_data = [load_closed_dataset_cached_agg_metrics(d) for d in ALL_CLOSED_DATASETS]
@@ -1075,56 +1088,8 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
         alpha=alpha,
     )
 
-    # Re-stratify by dataset
-    accum_metrics = {
-        "general": [],
-        "prop_sig-by_axis": [],
-        "prop_sig-by_model": [],
-        "prop_sig-by_qmethod": [],
-    }
-    accum_score_changes = []
-    for dataset in df_data["dataset"].unique().tolist():
-        df_curr = df_curr[df_curr["dataset"] == dataset]
-
-        curr_metrics = {}
-        curr_metrics["dataset"] = dataset
-        curr_metrics["num_significant"] = df_curr["is_significant"].sum()
-        curr_metrics["num_total"] = len(df_curr)
-
-        # Proportion of models with at least one significant change
-        curr_metrics["prop_significant"] = round(df_curr.groupby("model_modified")["is_significant"].any().mean(), 4)
-
-        # Compute metrics on significant changes
-        df_sig_changes = df_curr[df_curr["is_significant"]]
-        curr_metrics["significant-score_diff-min"] = df_sig_changes["agg_score_diff"].map(lambda x: x.mean).min()
-        curr_metrics["significant-score_diff-max"] = df_sig_changes["agg_score_diff"].map(lambda x: x.mean).max()
-        min_max_vals = [curr_metrics["significant-score_diff-min"], curr_metrics["significant-score_diff-max"]]
-
-        # Ensure they're normalized to below 1
-        if min_max_vals[1] > 1:
-            min_max_vals = [val / 100 for val in min_max_vals]
-        curr_metrics["significant-score_diff"] = min_max_vals
-        curr_metrics["significant-more_biased"] = df_sig_changes["significant_direction"].value_counts(normalize=True).round(4)["more biased"]
-        accum_metrics["general"].append(curr_metrics)
-
-        # Aggregated by dataset
-        df_curr_by_dataset = df_curr.groupby(["model_modified", "model_base", "q_method_full"])["is_significant"].any().reset_index()
-
-        # Which model was most impacted
-        accum_metrics["prop_sig-by_model"].append(groupby_avg(df_curr_by_dataset, "model_base", dataset=dataset))
-
-        # Which quantization strategies
-        accum_metrics["prop_sig-by_qmethod"].append(groupby_avg(df_curr_by_dataset, "q_method_full", dataset=dataset))
-        df_diff = df_curr[["agg_score_diff"]].copy()
-        df_diff["agg_score_diff"] = df_diff["agg_score_diff"].map(lambda x: x.mean).round(4)
-        if df_diff["agg_score_diff"].max() > 1:
-            df_diff["agg_score_diff"] = df_diff["agg_score_diff"] / 100
-        df_diff["dataset"] = RENAME_DATASET.get(dataset, dataset)
-
-        accum_score_changes.append(df_diff)
-
     ############################################################################
-    #                               Plotting                                   #
+    #       2A. Plot proportion of non-significant vs. significant changes     #
     ############################################################################
     # Dataset order
     all_datasets = ALL_CLOSED_DATASETS + ALL_OPEN_DATASETS
@@ -1133,8 +1098,6 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
         dataset_name = RENAME_DATASET.get(d, d)
         if dataset_name not in dataset_order:
             dataset_order.append(dataset_name)
-
-    # 2A. Plot proportion of non-significant vs. significant changes
 
     # Prepare data
     perc_sig = df_data.groupby(["dataset"]).apply(
@@ -1161,6 +1124,7 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
         x="perc_significant",
         color="#A9D9B2",
         label="less biased",
+        order=dataset_order,
         ylabel="",
         xlabel="",
     )
@@ -1176,52 +1140,163 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
         xlabel="% With Significant Behavior Change",
         order=dataset_order,
         ax=ax,
-        # title="Significant Change in Bias Scores",
         legend=True,
         save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-        save_fname="fig2-perc_significant_vs_not_significant.svg",
+        save_fname="fig2a-perc_significant_vs_not_significant.svg",
     )
 
-    # TODO: 2B. Distribution of Effect Sizes Among Significant Changes
+    ############################################################################
+    #        2B. Distribution of Effect Sizes Among Significant Changes        #
+    ############################################################################
+    # Filter for significant
+    df_sig_only = df_data[df_data["is_significant"]]
+    sig_datasets = df_sig_only["dataset"].unique().tolist()
+
+    # Plot
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    fig, axs = plt.subplots(len(sig_datasets), 1, sharex=True)
+    curr_dataset_order = [d for d in dataset_order if d in sig_datasets]
+    for idx, dataset in enumerate(curr_dataset_order):
+        df_dataset = df_sig_only[df_sig_only["dataset"] == dataset]
+        # Create plot kwargs
+        plot_kwargs = {
+            "xlabel": "",
+            "tick_params": {
+                "labelbottom": False,
+                "bottom": False,
+                "labelleft": False,
+                "left": False,
+            }
+        }
+        if idx == (len(sig_datasets) - 1):
+            plot_kwargs["xlabel"] = "Effect Size (Cohen's d)"
+            plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
+        # Plot KDE for each dataset
+        viz_utils.catplot(
+            df_dataset,
+            plot_type="kde", fill=True,
+            color="#FF7F4C",
+            x="cohens_d",
+            ylabel=dataset,
+            x_lim=[-10, 10],
+            ax=axs[idx],
+            **plot_kwargs,
+        )
+        axs[idx].set_ylabel(
+            dataset,
+            rotation=0,
+            ha="right",
+            va="center",
+            labelpad=30,
+        )
+
+    fig.subplots_adjust(hspace=0.5)
+    save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig2b-effect_size.svg")
+    plt.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close()
 
 
-    # TODO: 2C % Response Flipped Among Significantly vs. Insignificantly
-    # Affected Sub-Datasets
+    ############################################################################
+    #      2C. % Response Flipped Among Significantly vs. Insignificantly      #
+    ############################################################################
+    # Dataset order
+    unique_datasets = df_data["dataset"].unique().tolist()
+    closed_dataset_order = []
+    for d in ALL_CLOSED_DATASETS:
+        dataset_name = RENAME_DATASET.get(d, d)
+        if dataset_name not in closed_dataset_order and dataset_name in unique_datasets:
+            closed_dataset_order.append(dataset_name)
 
+    # Filter for significant
+    df_closed = df_data[df_data["dataset"].isin(closed_dataset_order)]
+    df_sig = df_closed[df_closed["is_significant"]]
+    df_unsig = df_closed[~df_closed["is_significant"]]
 
-    # 2B. Plot greatest change in bias scores for significant
-    data = df_general.explode("significant-score_diff")
-    # viz_utils.spread_plot(
-    #     data,
-    #     y="dataset",
-    #     x="significant-score_diff",
-    #     x_lim=1.0,
-    #     sharex=True,
-    #     xlabel="Change in Bias Scores",
-    #     save_path=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "agg_bias_scores_change-bar.svg")
-    # )
-    df_score_changes = pd.concat(accum_score_changes)
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    viz_utils.numplot(
-        df_score_changes,
-        plot_type="violin", split=False, inner="quart",
-        # hue=True, hue_order=[True, False], legend=False,      # HACK: To fix mirroring
-        violin_kwargs={"split_violin": True},
+    accum_flipping = []
+    for dataset in closed_dataset_order:
+        # Filter for dataset
+        df_sig_dataset = df_sig[df_sig["dataset"] == dataset]
+        df_unsig_dataset = df_unsig[df_unsig["dataset"] == dataset]
+
+        # Specify joining columns
+        join_cols = ["model_base", "model_modified", "social_axis"]
+
+        # Load individual responses
+        df_entropy_changes = load_closed_dataset_entropy_changes(dataset)
+
+        # Compute response flipping by social axis
+        # NOTE: This is to make it more efficient later
+        df_flipping = df_entropy_changes.groupby(join_cols)["Flipped"].mean()
+        df_flipping.name = "prop_flipped"
+        df_flipping = df_flipping.reset_index()
+        df_size = df_entropy_changes.groupby(join_cols).size()
+        df_size.name = "num_responses"
+        df_size = df_size.reset_index()
+
+        # Join on groupby columns
+        df_sig_dataset = pd.merge(df_sig_dataset, df_flipping, on=join_cols, how="inner")
+        df_sig_dataset = pd.merge(df_sig_dataset, df_size, on=join_cols, how="inner")
+        df_unsig_dataset = pd.merge(df_unsig_dataset, df_flipping, on=join_cols, how="inner")
+        df_unsig_dataset = pd.merge(df_unsig_dataset, df_size, on=join_cols, how="inner")
+
+        # Compute across social axis
+        sig_prop_flipped = (df_sig_dataset["prop_flipped"] * df_sig_dataset["num_responses"]).sum() / df_sig_dataset["num_responses"].sum()
+        unsig_prop_flipped = (df_unsig_dataset["prop_flipped"] * df_unsig_dataset["num_responses"]).sum() / df_unsig_dataset["num_responses"].sum()
+
+        # Store
+        accum_flipping.append({"dataset": dataset, "is_significant": True, "perc_flipped": 100*sig_prop_flipped})
+        accum_flipping.append({"dataset": dataset, "is_significant": False, "perc_flipped": 100*unsig_prop_flipped})
+
+    # Plot response flipping proportions by dataset
+    df_flipping = pd.DataFrame(accum_flipping)
+    viz_utils.catplot(
+        df_flipping,
+        plot_type="bar",
         y="dataset",
-        x="agg_score_diff",
-        x_lim=[-0.35, 0.35],
-        xlabel="Change in Bias Scores",
+        x="perc_flipped",
+        hue="is_significant",
+        palette=["#85B8A2",  "#7D85A7"],
+        x_lim=[0, 50],
+        hue_order=[True, False],
         ylabel="",
+        xlabel="% Responses Flipped",
+        order=closed_dataset_order,
+        legend=True,
         save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-        save_fname="fig2-agg_bias_scores_change-violin.svg",
+        save_fname="fig2c-response_flipping_by_sig.svg",
     )
-
-
-
 
     ################################################################################
     #                                 To Be Moved                                  #
     ################################################################################
+    # # 2B. Plot greatest change in bias scores for significant
+    # data = df_general.explode("significant-score_diff")
+    # # viz_utils.spread_plot(
+    # #     data,
+    # #     y="dataset",
+    # #     x="significant-score_diff",
+    # #     x_lim=1.0,
+    # #     sharex=True,
+    # #     xlabel="Change in Bias Scores",
+    # #     save_path=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "agg_bias_scores_change-bar.svg")
+    # # )
+    # df_score_changes = pd.concat(accum_score_changes)
+    # viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+    # viz_utils.numplot(
+    #     df_score_changes,
+    #     plot_type="violin", split=False, inner="quart",
+    #     # hue=True, hue_order=[True, False], legend=False,      # HACK: To fix mirroring
+    #     violin_kwargs={"split_violin": True},
+    #     y="dataset",
+    #     x="agg_score_diff",
+    #     x_lim=[-0.35, 0.35],
+    #     xlabel="Change in Bias Scores",
+    #     ylabel="",
+    #     save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+    #     save_fname="fig2-agg_bias_scores_change-violin.svg",
+    # )
+
+
     # # By quantization
     # order = [
     #     "RTN W8A16",
@@ -1258,287 +1333,7 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
     # )
 
 
-# Supplementary Table. INT8 weight quantization leads to fewer changes
-def change_in_agg_metrics_int8():
-    datasets = [
-        "CEB-Jigsaw",
-        "CEB-Adult",
-        "CEB-Credit",
-    ]
-
-    accum_metrics = {
-        "prop_sig-by_qmethod": [],
-    }
-    for dataset in datasets:
-        df_curr = load_closed_dataset_cached_agg_metrics(dataset, keep_w8a8=True)
-        # Aggregated by dataset
-        df_curr_by_dataset = df_curr.groupby(["model_modified", "model_base", "q_method_full"])["is_significant"].any().reset_index()
-        # Which quantization strategies
-        accum_metrics["prop_sig-by_qmethod"].append(groupby_avg(df_curr_by_dataset, "q_method_full", dataset=dataset))
-
-    # By quantization
-    order = [
-        "RTN W8A16",
-        "RTN W8A8",
-        "RTN W4A16",
-        "RTN W4A16 + SQ",
-        "GPTQ W4A16",
-        "AWQ W4A16"
-    ]
-    df_qmethod = pd.concat(accum_metrics["prop_sig-by_qmethod"])
-    df_qmethod = df_qmethod.pivot(index="q_method_full", columns="dataset", values="is_significant")
-    df_qmethod = df_qmethod.loc[order]
-    # Supplementary
-    df_w8_supp = df_qmethod.dropna(axis=1)
-    df_w8_supp = (100 * df_w8_supp).round(1)
-    print("(Avg) W4:", df_w8_supp.loc[df_w8_supp.index.str.contains("W4")].mean(axis=0))
-    print("(Avg) W8:", df_w8_supp.loc[df_w8_supp.index.str.contains("W8")].mean(axis=0))
-    df_w8_supp.to_csv(os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "supp_table-w8_qmethod.csv"))
-
-
-# DEPRECATED: Table 2. Response flipping by positive/negative non-significant bias
-def change_in_response_flipping_by_sig_bias():
-    datasets = [
-        "CEB-Recognition", "CEB-Jigsaw",
-        "CEB-Adult", "CEB-Credit",
-        "BiasLens-Choices",
-        "SocialStigmaQA",
-        "BBQ",
-        "IAT",
-        "StereoSet-Intersentence",
-        # "StereoSet-Intrasentence",
-        # "BiasLens-YesNo",
-    ]
-
-    accum_direction_metrics = []
-    direction_to_bias_transition = {}
-    for dataset in datasets:
-        df_probs_changed = load_closed_dataset_entropy_changes(dataset)
-        df_agg = load_closed_dataset_cached_agg_metrics(dataset)
-        if df_probs_changed.empty or df_agg.empty:
-            continue
-        renamed_dataset = RENAME_DATASET.get(dataset, dataset)
-        # Split quantized models by social axis and significant changes post-quantization
-        sig_to_models = df_agg.groupby(["social_axis", "significant_direction"], dropna=False)["model_modified"].unique().reset_index()
-        sig_to_models["significant_direction"] = sig_to_models["significant_direction"].fillna("not significant")
-        # For each significant change, get response flipping
-        dset_direction_metrics = []
-        for direction in ["more biased", "less biased", "not significant"]:
-            mask = sig_to_models["significant_direction"] == direction
-            if not mask.sum():
-                continue
-            curr_sig_to_models = sig_to_models[mask]
-            # Get all rows for data corresponding to the more/less insignificant change in bias scores
-            social_axes = curr_sig_to_models["social_axis"].unique()
-            curr_sig_to_models = curr_sig_to_models.set_index("social_axis")
-            accum_sig_probs_social_axis = []
-            for social_axis in social_axes:
-                curr_models = curr_sig_to_models.loc[social_axis, "model_modified"]
-                probs_mask = df_probs_changed["model_modified"].isin(curr_models) & (df_probs_changed["social_axis"] == social_axis)
-                accum_sig_probs_social_axis.append(df_probs_changed[probs_mask])
-            df_curr_direction = pd.concat(accum_sig_probs_social_axis)
-            # Now compute flipping on identified rows
-            curr_direction_metrics = {"dataset": renamed_dataset, "direction": direction}
-            curr_direction_metrics["prop_flipped_response"] = df_curr_direction["Flipped"].mean()
-            curr_direction_metrics["prop_flipped_bias"] = df_curr_direction["Bias_Flipped"].mean()
-            dset_direction_metrics.append(curr_direction_metrics)
-            if direction not in direction_to_bias_transition:
-                direction_to_bias_transition[direction] = []
-            bias_transition = df_curr_direction[["is_biased_base", "is_biased_modified"]].value_counts(normalize=True).reset_index()
-            bias_transition["dataset"] = renamed_dataset
-            direction_to_bias_transition[direction].append(bias_transition)
-        accum_direction_metrics.extend(dset_direction_metrics)
-
-    # Get percentage of responses that flip
-    df_direction_metrics = pd.DataFrame(accum_direction_metrics)
-    df_flipped_by_direction = df_direction_metrics.pivot(
-        index="direction",
-        columns="dataset",
-        values="prop_flipped_response",
-    )
-
-    # Aggregate
-    accum_table_2 = []
-    for direction in ["more biased", "less biased", "not significant"]:
-        df_direction = pd.concat(direction_to_bias_transition[direction])
-        bias_flipping = df_direction.pivot(
-            index=["is_biased_base", "is_biased_modified"],
-            columns="dataset",
-            values="proportion"
-        ).reset_index()
-        map_change = {
-            (True, False): "B -> UnB",
-            (False, True): "UnB -> B",
-            (True, True): "B -> B",
-            (False, False): "UnB -> UnB",
-        }
-        bias_flipping["bias_change"] = bias_flipping.apply(
-            lambda row: map_change[(row["is_biased_base"], row["is_biased_modified"])],
-            axis=1
-        )
-        bias_flipping = bias_flipping.drop(columns=["is_biased_base", "is_biased_modified"])
-        bias_flipping = bias_flipping.set_index("bias_change").T[["UnB -> B", "B -> UnB"]]
-        # Add proportion of flipped responses
-        prop_flipped = df_flipped_by_direction.loc[direction].T
-        prop_flipped.name = "flipped"
-        bias_flipping = pd.concat([prop_flipped, bias_flipping], axis=1)
-        # Convert to percentages
-        bias_flipping = (bias_flipping * 100).round(2)
-        accum_table_2.append(bias_flipping)
-
-    df_table_2 = pd.concat(accum_table_2, axis=1)
-    df_table_2 = df_table_2.fillna(0)
-    # Reorder by datasets
-    renamed_datasets = [RENAME_DATASET.get(d, d) for d in datasets]
-    df_table_2 = df_table_2.loc[[d for d in renamed_datasets if d in df_table_2.index]]
-    # Save as table 2
-    save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
-    os.makedirs(save_dir, exist_ok=True)
-    df_table_2.to_csv(os.path.join(save_dir, "deprecated-table_2.csv"))
-
-
-# Table 1. Response flipping by low/medium/high uncertainty
-def change_in_response_flipping():
-    datasets = [
-        "CEB-Recognition", "CEB-Jigsaw",
-        "CEB-Adult", "CEB-Credit",
-        "BiasLens-Choices",
-        "SocialStigmaQA",
-        "BBQ",
-        "IAT",
-        "StereoSet-Intersentence",
-        # "StereoSet-Intrasentence",
-        # "BiasLens-YesNo",
-    ]
-
-    accum_metrics = []
-    for dataset in datasets:
-        df_probs_changed = load_closed_dataset_entropy_changes(dataset)
-        if df_probs_changed.empty:
-            continue
-        assert df_probs_changed["num_choices"].nunique() == 1, "The number of options should remain fixed in the dataset!"
-        curr_metrics = {}
-        curr_metrics["dataset"] = RENAME_DATASET.get(dataset, dataset)
-        num_choices = df_probs_changed["num_choices"].unique()[0]
-        curr_metrics["num_choices"] = num_choices
-        # Get measures at different uncertainty levels
-        for certainty in ["high", "medium", "low"]:
-            mask = df_probs_changed["normalized_entropy_category"] == certainty
-            df_curr = df_probs_changed[mask]
-            if df_curr.empty:
-                curr_metrics[f"{certainty} - % responses"] = 0
-                curr_metrics[f"{certainty} - response_flip"] = None
-                curr_metrics[f"{certainty} - bias_flip"] = None
-                continue
-            curr_metrics[f"{certainty} - % responses"] = round(100 * mask.mean())
-            # norm_entropy_diff = df_curr["normalized_entropy_modified"] - df_curr["normalized_entropy_base"]
-            # curr_metrics[f"{certainty} - entropy_change"] = f"{norm_entropy_diff.mean():.2f} +/- {norm_entropy_diff.std():.2f}"
-            curr_metrics[f"{certainty} - response_flip"] = round(100 * df_curr["Flipped"].mean())
-            curr_metrics[f"{certainty} - bias_flip"] = round(100 * df_curr["Bias_Flipped"].mean())
-        accum_metrics.append(curr_metrics)
-
-    # Store
-    df_table_2 = pd.DataFrame(accum_metrics)
-    save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
-    os.makedirs(save_dir, exist_ok=True)
-    df_table_2.to_csv(os.path.join(save_dir, "table_2_uncertainty.csv"), index=False)
-
-
-# Supplementary Table 2.
-def changes_in_model_selection():
-    ############################################################################
-    #                         Bias Identification                              #
-    ############################################################################
-    filter_axes = ["gender", "gender_identity"]
-    base_cols = ["model_base"]
-    modified_cols = ["model_base", "model_modified"]
-
-    accum_metrics = []
-
-    # Choose metric function
-    dataset_to_metric_func = {
-        ("CEB-Recognition-S", "CEB-Recognition-T", "CEB-Jigsaw",): any_bias_score_dataset,
-        ("CEB-Adult", "CEB-Credit",): equalized_odds_dataset,
-        ("BBQ",): bbq_score_dataset,
-    }
-    filter_datasets = ["CEB-Jigsaw", "CEB-Adult", "BBQ"]
-
-    model_regex = r"qwen2\.5(.*)-lc-rtn-w4a16"
-
-    for datasets, metric_func in dataset_to_metric_func.items():
-        for dataset in datasets:
-            if filter_datasets and dataset not in filter_datasets:
-                continue
-            df_data = supp_load_pairwise_differences([dataset], model_regex=model_regex)
-            axis_mask = (df_data["social_axis"].isin(filter_axes))
-            df_base = df_data[axis_mask].drop_duplicates(subset=["model_base", "idx"])
-            # 1. Native Precision LLM
-            LOGGER.info(f"\n[{dataset}] Bootstrapping Bias Scores for Native Precision Model:")
-            unq_scores = groupby_bootstrap_metric(
-                df_base, base_cols, metric_func,
-                col_suffix="_base",
-                parallel_groups=True
-            )
-            df_unq = pd.Series(unq_scores)
-            if dataset == "BBQ":        # Extract ambiguous score
-                df_unq = df_unq.map(lambda x: x[-1])
-            df_unq = df_unq.reset_index()
-            df_unq.columns = base_cols + [f"{dataset} - Base"]
-            # 2. Quantized LLM
-            df_modified = df_data[axis_mask & df_data["q_method_full"].isin(["RTN W4A16"])]
-            LOGGER.info(f"\n[{dataset}] Bootstrapping Bias Scores for Quantized Model:")
-            q_scores = groupby_bootstrap_metric(
-                df_modified, modified_cols, metric_func,
-                col_suffix="_modified",
-                parallel_groups=True
-            )
-            df_q = pd.Series(q_scores)
-            if dataset == "BBQ":        # Extract ambiguous score
-                df_q = df_q.map(lambda x: x[-1])
-            df_q = df_q.reset_index()
-            df_q.columns = modified_cols + [f"{dataset} - RTN W4A16"]
-
-            # Store metrics
-            metrics = df_unq.merge(df_q, how="inner", on="model_base", suffixes=("", "_dup"))
-            metrics = metrics.drop(columns=["model_modified"])
-            metrics = metrics.set_index(["model_base"])
-            accum_metrics.append(metrics)
-    # Concatenate results
-    df_metrics_all = pd.concat(accum_metrics, axis=1)
-    df_metrics_all.index.name = "Model"
-    # Save metrics
-    save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, "supp-gender_bias-metrics.csv")
-    df_metrics_all.to_csv(save_path)
-
-    # Load metrics
-    df_metrics_all = pd.read_csv(save_path)
-    df_metrics_all[["BBQ - Base", "BBQ - RTN W4A16"]] = df_metrics_all[["BBQ - Base", "BBQ - RTN W4A16"]].map(lambda x: ast.literal_eval(x)[-1])
-    df_metrics_all = df_metrics_all.set_index("Model")
-    df_metrics_all = df_metrics_all.map(MetricValue)
-
-    # df_metrics_all.columns = [
-    #     "Base Model", "drop_1",
-    #     "Jigsaw - RTN W4A16", "Jigsaw - Base",
-    #     "drop_2", "Adult - RTN W4A16", "Adult - Base",
-    #     "drop_3", "BBQ - RTN W4A16", "BBQ - Base",
-    # ]
-    # df_metrics_all = df_metrics_all[[col for col in df_metrics_all if not col.startswith("drop")]]
-    df_metrics_all = df_metrics_all.set_index("Model")
-    row_order = ["qwen2.5-0.5b-instruct", "qwen2.5-1.5b-instruct", "qwen2.5-3b-instruct", "qwen2.5-7b-instruct", "qwen2.5-14b-instruct"]
-    df_metrics_all = df_metrics_all.loc[row_order]
-
-    # Create rankings
-    df_metric_ranking_all = df_metrics_all.copy().dropna()
-    for col in df_metric_ranking_all.columns:
-        df_metric_ranking_all[col] = rank_metric_values(df_metric_ranking_all[col].tolist(), "dense")
-
-    # Save rankings
-    df_metric_ranking_all.to_csv(os.path.join(save_dir, "supp-gender_bias-metric_rankings.csv"))
-
-
-# Figure 2.
+# Figure 3.
 def change_in_probabilities():
     datasets = [
         "CEB-Recognition", "CEB-Jigsaw",
@@ -1707,7 +1502,7 @@ def change_in_probabilities():
     # )
 
 
-# Figure 3.
+# Figure 4.
 def factors_related_to_response_flipping():
     datasets = [
         "CEB-Recognition", "CEB-Jigsaw",
@@ -1815,7 +1610,7 @@ def factors_related_to_response_flipping():
     plt.close()
 
 
-# Figure 3c.
+# Figure 4c.
 def change_in_response_by_social_group_bbq():
     save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
     os.makedirs(save_dir, exist_ok=True)
@@ -2083,7 +1878,7 @@ def change_in_response_by_social_group_bbq():
     plt.close()
 
 
-# Supplement to Figure 3c.
+# Supplement to Figure 4c.
 def change_in_response_by_social_group_biaslens():
     dataset = "BiasLens-Choices"
     # Load datasets
@@ -2303,6 +2098,286 @@ def change_in_response_by_social_group_biaslens():
     save_path = os.path.join(save_dir, "fig4-bbq_bias_flipping_by_social_group.svg")
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close()
+
+
+# Table 1. Response flipping by low/medium/high uncertainty
+def change_in_response_flipping():
+    datasets = [
+        "CEB-Recognition", "CEB-Jigsaw",
+        "CEB-Adult", "CEB-Credit",
+        "BiasLens-Choices",
+        "SocialStigmaQA",
+        "BBQ",
+        "IAT",
+        "StereoSet-Intersentence",
+        # "StereoSet-Intrasentence",
+        # "BiasLens-YesNo",
+    ]
+
+    accum_metrics = []
+    for dataset in datasets:
+        df_probs_changed = load_closed_dataset_entropy_changes(dataset)
+        if df_probs_changed.empty:
+            continue
+        assert df_probs_changed["num_choices"].nunique() == 1, "The number of options should remain fixed in the dataset!"
+        curr_metrics = {}
+        curr_metrics["dataset"] = RENAME_DATASET.get(dataset, dataset)
+        num_choices = df_probs_changed["num_choices"].unique()[0]
+        curr_metrics["num_choices"] = num_choices
+        # Get measures at different uncertainty levels
+        for certainty in ["high", "medium", "low"]:
+            mask = df_probs_changed["normalized_entropy_category"] == certainty
+            df_curr = df_probs_changed[mask]
+            if df_curr.empty:
+                curr_metrics[f"{certainty} - % responses"] = 0
+                curr_metrics[f"{certainty} - response_flip"] = None
+                curr_metrics[f"{certainty} - bias_flip"] = None
+                continue
+            curr_metrics[f"{certainty} - % responses"] = round(100 * mask.mean())
+            # norm_entropy_diff = df_curr["normalized_entropy_modified"] - df_curr["normalized_entropy_base"]
+            # curr_metrics[f"{certainty} - entropy_change"] = f"{norm_entropy_diff.mean():.2f} +/- {norm_entropy_diff.std():.2f}"
+            curr_metrics[f"{certainty} - response_flip"] = round(100 * df_curr["Flipped"].mean())
+            curr_metrics[f"{certainty} - bias_flip"] = round(100 * df_curr["Bias_Flipped"].mean())
+        accum_metrics.append(curr_metrics)
+
+    # Store
+    df_table_2 = pd.DataFrame(accum_metrics)
+    save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
+    os.makedirs(save_dir, exist_ok=True)
+    df_table_2.to_csv(os.path.join(save_dir, "table_2_uncertainty.csv"), index=False)
+
+
+# Supplementary Table. INT8 weight quantization leads to fewer changes
+def change_in_agg_metrics_int8():
+    datasets = [
+        "CEB-Jigsaw",
+        "CEB-Adult",
+        "CEB-Credit",
+    ]
+
+    accum_metrics = {
+        "prop_sig-by_qmethod": [],
+    }
+    for dataset in datasets:
+        df_curr = load_closed_dataset_cached_agg_metrics(dataset, keep_w8a8=True)
+        # Aggregated by dataset
+        df_curr_by_dataset = df_curr.groupby(["model_modified", "model_base", "q_method_full"])["is_significant"].any().reset_index()
+        # Which quantization strategies
+        accum_metrics["prop_sig-by_qmethod"].append(groupby_avg(df_curr_by_dataset, "q_method_full", dataset=dataset))
+
+    # By quantization
+    order = [
+        "RTN W8A16",
+        "RTN W8A8",
+        "RTN W4A16",
+        "RTN W4A16 + SQ",
+        "GPTQ W4A16",
+        "AWQ W4A16"
+    ]
+    df_qmethod = pd.concat(accum_metrics["prop_sig-by_qmethod"])
+    df_qmethod = df_qmethod.pivot(index="q_method_full", columns="dataset", values="is_significant")
+    df_qmethod = df_qmethod.loc[order]
+    # Supplementary
+    df_w8_supp = df_qmethod.dropna(axis=1)
+    df_w8_supp = (100 * df_w8_supp).round(1)
+    print("(Avg) W4:", df_w8_supp.loc[df_w8_supp.index.str.contains("W4")].mean(axis=0))
+    print("(Avg) W8:", df_w8_supp.loc[df_w8_supp.index.str.contains("W8")].mean(axis=0))
+    df_w8_supp.to_csv(os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "supp_table-w8_qmethod.csv"))
+
+
+# DEPRECATED: Table 2. Response flipping by positive/negative non-significant bias
+def change_in_response_flipping_by_sig_bias():
+    datasets = [
+        "CEB-Recognition", "CEB-Jigsaw",
+        "CEB-Adult", "CEB-Credit",
+        "BiasLens-Choices",
+        "SocialStigmaQA",
+        "BBQ",
+        "IAT",
+        "StereoSet-Intersentence",
+        # "StereoSet-Intrasentence",
+        # "BiasLens-YesNo",
+    ]
+
+    accum_direction_metrics = []
+    direction_to_bias_transition = {}
+    for dataset in datasets:
+        df_probs_changed = load_closed_dataset_entropy_changes(dataset)
+        df_agg = load_closed_dataset_cached_agg_metrics(dataset)
+        if df_probs_changed.empty or df_agg.empty:
+            continue
+        renamed_dataset = RENAME_DATASET.get(dataset, dataset)
+        # Split quantized models by social axis and significant changes post-quantization
+        sig_to_models = df_agg.groupby(["social_axis", "significant_direction"], dropna=False)["model_modified"].unique().reset_index()
+        sig_to_models["significant_direction"] = sig_to_models["significant_direction"].fillna("not significant")
+        # For each significant change, get response flipping
+        dset_direction_metrics = []
+        for direction in ["more biased", "less biased", "not significant"]:
+            mask = sig_to_models["significant_direction"] == direction
+            if not mask.sum():
+                continue
+            curr_sig_to_models = sig_to_models[mask]
+            # Get all rows for data corresponding to the more/less insignificant change in bias scores
+            social_axes = curr_sig_to_models["social_axis"].unique()
+            curr_sig_to_models = curr_sig_to_models.set_index("social_axis")
+            accum_sig_probs_social_axis = []
+            for social_axis in social_axes:
+                curr_models = curr_sig_to_models.loc[social_axis, "model_modified"]
+                probs_mask = df_probs_changed["model_modified"].isin(curr_models) & (df_probs_changed["social_axis"] == social_axis)
+                accum_sig_probs_social_axis.append(df_probs_changed[probs_mask])
+            df_curr_direction = pd.concat(accum_sig_probs_social_axis)
+            # Now compute flipping on identified rows
+            curr_direction_metrics = {"dataset": renamed_dataset, "direction": direction}
+            curr_direction_metrics["prop_flipped_response"] = df_curr_direction["Flipped"].mean()
+            curr_direction_metrics["prop_flipped_bias"] = df_curr_direction["Bias_Flipped"].mean()
+            dset_direction_metrics.append(curr_direction_metrics)
+            if direction not in direction_to_bias_transition:
+                direction_to_bias_transition[direction] = []
+            bias_transition = df_curr_direction[["is_biased_base", "is_biased_modified"]].value_counts(normalize=True).reset_index()
+            bias_transition["dataset"] = renamed_dataset
+            direction_to_bias_transition[direction].append(bias_transition)
+        accum_direction_metrics.extend(dset_direction_metrics)
+
+    # Get percentage of responses that flip
+    df_direction_metrics = pd.DataFrame(accum_direction_metrics)
+    df_flipped_by_direction = df_direction_metrics.pivot(
+        index="direction",
+        columns="dataset",
+        values="prop_flipped_response",
+    )
+
+    # Aggregate
+    accum_table_2 = []
+    for direction in ["more biased", "less biased", "not significant"]:
+        df_direction = pd.concat(direction_to_bias_transition[direction])
+        bias_flipping = df_direction.pivot(
+            index=["is_biased_base", "is_biased_modified"],
+            columns="dataset",
+            values="proportion"
+        ).reset_index()
+        map_change = {
+            (True, False): "B -> UnB",
+            (False, True): "UnB -> B",
+            (True, True): "B -> B",
+            (False, False): "UnB -> UnB",
+        }
+        bias_flipping["bias_change"] = bias_flipping.apply(
+            lambda row: map_change[(row["is_biased_base"], row["is_biased_modified"])],
+            axis=1
+        )
+        bias_flipping = bias_flipping.drop(columns=["is_biased_base", "is_biased_modified"])
+        bias_flipping = bias_flipping.set_index("bias_change").T[["UnB -> B", "B -> UnB"]]
+        # Add proportion of flipped responses
+        prop_flipped = df_flipped_by_direction.loc[direction].T
+        prop_flipped.name = "flipped"
+        bias_flipping = pd.concat([prop_flipped, bias_flipping], axis=1)
+        # Convert to percentages
+        bias_flipping = (bias_flipping * 100).round(2)
+        accum_table_2.append(bias_flipping)
+
+    df_table_2 = pd.concat(accum_table_2, axis=1)
+    df_table_2 = df_table_2.fillna(0)
+    # Reorder by datasets
+    renamed_datasets = [RENAME_DATASET.get(d, d) for d in datasets]
+    df_table_2 = df_table_2.loc[[d for d in renamed_datasets if d in df_table_2.index]]
+    # Save as table 2
+    save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
+    os.makedirs(save_dir, exist_ok=True)
+    df_table_2.to_csv(os.path.join(save_dir, "deprecated-table_2.csv"))
+
+
+# Supplementary Table 2.
+def changes_in_model_selection():
+    ############################################################################
+    #                         Bias Identification                              #
+    ############################################################################
+    filter_axes = ["gender", "gender_identity"]
+    base_cols = ["model_base"]
+    modified_cols = ["model_base", "model_modified"]
+
+    accum_metrics = []
+
+    # Choose metric function
+    dataset_to_metric_func = {
+        ("CEB-Recognition-S", "CEB-Recognition-T", "CEB-Jigsaw",): any_bias_score_dataset,
+        ("CEB-Adult", "CEB-Credit",): equalized_odds_dataset,
+        ("BBQ",): bbq_score_dataset,
+    }
+    filter_datasets = ["CEB-Jigsaw", "CEB-Adult", "BBQ"]
+
+    model_regex = r"qwen2\.5(.*)-lc-rtn-w4a16"
+
+    for datasets, metric_func in dataset_to_metric_func.items():
+        for dataset in datasets:
+            if filter_datasets and dataset not in filter_datasets:
+                continue
+            df_data = supp_load_pairwise_differences([dataset], model_regex=model_regex)
+            axis_mask = (df_data["social_axis"].isin(filter_axes))
+            df_base = df_data[axis_mask].drop_duplicates(subset=["model_base", "idx"])
+            # 1. Native Precision LLM
+            LOGGER.info(f"\n[{dataset}] Bootstrapping Bias Scores for Native Precision Model:")
+            unq_scores = groupby_bootstrap_metric(
+                df_base, base_cols, metric_func,
+                col_suffix="_base",
+                parallel_groups=True
+            )
+            df_unq = pd.Series(unq_scores)
+            if dataset == "BBQ":        # Extract ambiguous score
+                df_unq = df_unq.map(lambda x: x[-1])
+            df_unq = df_unq.reset_index()
+            df_unq.columns = base_cols + [f"{dataset} - Base"]
+            # 2. Quantized LLM
+            df_modified = df_data[axis_mask & df_data["q_method_full"].isin(["RTN W4A16"])]
+            LOGGER.info(f"\n[{dataset}] Bootstrapping Bias Scores for Quantized Model:")
+            q_scores = groupby_bootstrap_metric(
+                df_modified, modified_cols, metric_func,
+                col_suffix="_modified",
+                parallel_groups=True
+            )
+            df_q = pd.Series(q_scores)
+            if dataset == "BBQ":        # Extract ambiguous score
+                df_q = df_q.map(lambda x: x[-1])
+            df_q = df_q.reset_index()
+            df_q.columns = modified_cols + [f"{dataset} - RTN W4A16"]
+
+            # Store metrics
+            metrics = df_unq.merge(df_q, how="inner", on="model_base", suffixes=("", "_dup"))
+            metrics = metrics.drop(columns=["model_modified"])
+            metrics = metrics.set_index(["model_base"])
+            accum_metrics.append(metrics)
+    # Concatenate results
+    df_metrics_all = pd.concat(accum_metrics, axis=1)
+    df_metrics_all.index.name = "Model"
+    # Save metrics
+    save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, "supp-gender_bias-metrics.csv")
+    df_metrics_all.to_csv(save_path)
+
+    # Load metrics
+    df_metrics_all = pd.read_csv(save_path)
+    df_metrics_all[["BBQ - Base", "BBQ - RTN W4A16"]] = df_metrics_all[["BBQ - Base", "BBQ - RTN W4A16"]].map(lambda x: ast.literal_eval(x)[-1])
+    df_metrics_all = df_metrics_all.set_index("Model")
+    df_metrics_all = df_metrics_all.map(MetricValue)
+
+    # df_metrics_all.columns = [
+    #     "Base Model", "drop_1",
+    #     "Jigsaw - RTN W4A16", "Jigsaw - Base",
+    #     "drop_2", "Adult - RTN W4A16", "Adult - Base",
+    #     "drop_3", "BBQ - RTN W4A16", "BBQ - Base",
+    # ]
+    # df_metrics_all = df_metrics_all[[col for col in df_metrics_all if not col.startswith("drop")]]
+    df_metrics_all = df_metrics_all.set_index("Model")
+    row_order = ["qwen2.5-0.5b-instruct", "qwen2.5-1.5b-instruct", "qwen2.5-3b-instruct", "qwen2.5-7b-instruct", "qwen2.5-14b-instruct"]
+    df_metrics_all = df_metrics_all.loc[row_order]
+
+    # Create rankings
+    df_metric_ranking_all = df_metrics_all.copy().dropna()
+    for col in df_metric_ranking_all.columns:
+        df_metric_ranking_all[col] = rank_metric_values(df_metric_ranking_all[col].tolist(), "dense")
+
+    # Save rankings
+    df_metric_ranking_all.to_csv(os.path.join(save_dir, "supp-gender_bias-metric_rankings.csv"))
 
 
 ################################################################################
@@ -4587,7 +4662,7 @@ def groupby_permutation_test(
     # Ensure groupby_cols is a list for consistent handling
     if isinstance(groupby_cols, str):
         groupby_cols = [groupby_cols]
-    
+
     grouped = df.groupby(groupby_cols)
 
     # CASE 1: Serial processing
@@ -4601,7 +4676,7 @@ def groupby_permutation_test(
             curr_result.update({'n_samples': len(group_df)})
 
             # Skip very small groups
-            if len(group_df) < min_n_group: 
+            if len(group_df) < min_n_group:
                 group_results.append(curr_result)
                 continue
 
@@ -4609,18 +4684,18 @@ def groupby_permutation_test(
                 group_df, metric_func, unquant_col, quant_col, n_iter, **kwargs
             ))
             group_results.append(curr_result)
-            
+
     # CASE 2: Parallel processing
     else:
         groups_list = list(grouped)
-        
+
         # Filter out groups that are too small
         valid_groups = [(name, df_group) for name, df_group in groups_list if len(df_group) >= min_n_group]
-        
+
         print(f"Parallelizing permutation tests across {len(valid_groups)} groups using {NUM_WORKERS} workers...")
-        
+
         group_results = []
-        
+
         # Use ProcessPoolExecutor to process groups in parallel
         with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
             # Dictionary to hold futures, mapped back to group names and sample counts
@@ -4639,17 +4714,17 @@ def groupby_permutation_test(
 
             for future in tqdm(as_completed(futures), total=len(futures), desc="Processing groups in parallel"):
                 group_name, num_samples = futures[future]
-                
+
                 # Add group information to result
                 curr_result = {}
                 for i, col in enumerate(groupby_cols):
                     curr_result[col] = group_name[i] if isinstance(group_name, (list, tuple)) else group_name
                 curr_result.update({'n_samples': num_samples})
-                
+
                 # Get the permutation test results
                 curr_result.update(future.result())
                 group_results.append(curr_result)
-        
+
         # Add back the small groups that were skipped
         small_groups = [(name, df_group) for name, df_group in groups_list if len(df_group) < min_n_group]
         for group_name, group_df in small_groups:
@@ -4790,7 +4865,7 @@ def bootstrap_metric(df, metric_func, n_iter=1000, parallel=False, as_text=True,
 def compute_cohens_d_point_estimate(df, metric_func, unquant_col, quant_col, **kwargs):
     """
     Compute Cohen's d point estimate, automatically detecting metric type.
-    
+
     Parameters
     ----------
     df : pd.DataFrame
@@ -4803,7 +4878,7 @@ def compute_cohens_d_point_estimate(df, metric_func, unquant_col, quant_col, **k
         Column name with quantized responses
     **kwargs : dict
         Additional arguments for metric_func
-        
+
     Returns
     -------
     float
@@ -4822,7 +4897,7 @@ def compute_cohens_d_point_estimate(df, metric_func, unquant_col, quant_col, **k
 def compute_cohens_d_individual_direct(df, metric_func, **kwargs):
     """
     Compute Cohen's d for individual-level metrics using metric function directly.
-    
+
     Parameters
     ----------
     df : pd.DataFrame
@@ -4831,7 +4906,7 @@ def compute_cohens_d_individual_direct(df, metric_func, **kwargs):
         Metric function that can be computed per-question
     **kwargs : dict
         Prepared keyword arguments for metric_func
-        
+
     Returns
     -------
     float
@@ -4841,7 +4916,7 @@ def compute_cohens_d_individual_direct(df, metric_func, **kwargs):
         # Compute metric value for each individual question/response
         unquant_values = []
         quant_values = []
-        
+
         for i in range(len(df)):
             # Compute metric for this individual question
             unquant_metric = metric_func(df.iloc[[i]], col_suffix="_base", **kwargs)
@@ -4851,17 +4926,17 @@ def compute_cohens_d_individual_direct(df, metric_func, **kwargs):
 
         unquant_values = np.array(unquant_values)
         quant_values = np.array(quant_values)
-        
+
         # Compute Cohen's d between the two sets of metric values
         mean1, mean2 = np.mean(unquant_values), np.mean(quant_values)
         var1, var2 = np.var(unquant_values, ddof=1), np.var(quant_values, ddof=1)
         pooled_std = np.sqrt((var1 + var2) / 2)
-        
+
         if pooled_std == 0:
             return 0.0
-        
+
         return (mean1 - mean2) / pooled_std
-        
+
     except Exception:
         return np.nan
 
@@ -4869,7 +4944,7 @@ def compute_cohens_d_individual_direct(df, metric_func, **kwargs):
 def compute_cohens_d_group_bootstrap(df, metric_func, n_bootstrap=200, **kwargs):
     """
     Compute Cohen's d for group-level metrics using bootstrap approach.
-    
+
     Parameters
     ----------
     df : pd.DataFrame
@@ -4880,7 +4955,7 @@ def compute_cohens_d_group_bootstrap(df, metric_func, n_bootstrap=200, **kwargs)
         Number of bootstrap samples to generate, by default 200
     **kwargs : dict
         Prepared keyword arguments for metric_func
-        
+
     Returns
     -------
     float
@@ -4888,7 +4963,7 @@ def compute_cohens_d_group_bootstrap(df, metric_func, n_bootstrap=200, **kwargs)
     """
     unquant_metrics = []
     quant_metrics = []
-    
+
     for _ in range(n_bootstrap):
         try:
             # Bootstrap sample
@@ -4901,20 +4976,20 @@ def compute_cohens_d_group_bootstrap(df, metric_func, n_bootstrap=200, **kwargs)
             quant_metrics.append(quant_metric)
         except Exception:
             continue
-    
+
     if len(unquant_metrics) < 50:  # Need sufficient samples
         return np.nan
-    
+
     # Cohen's d between the two bootstrap distributions
     unquant_metrics = np.array(unquant_metrics)
     quant_metrics = np.array(quant_metrics)
-    
+
     mean_diff = np.mean(unquant_metrics) - np.mean(quant_metrics)
     pooled_std = np.sqrt((np.var(unquant_metrics, ddof=1) + np.var(quant_metrics, ddof=1)) / 2)
-    
+
     if pooled_std == 0:
         return 0.0
-    
+
     return mean_diff / pooled_std
 
 
@@ -5010,7 +5085,7 @@ def adjust_for_multiple_comparisons(df_results, pval_col="p_value", correction_m
     Returns
     -------
     pd.DataFrame
-        Table with `adjusted_p_value`, 
+        Table with `adjusted_p_value`,
     """
     # Apply multiple comparisons correction only to groups with valid p-values
     valid_mask = df_results[pval_col].notna() if pval_col in df_results.columns else pd.Series([False] * len(df_results))

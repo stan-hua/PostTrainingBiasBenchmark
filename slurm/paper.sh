@@ -48,10 +48,10 @@ CLOSED_DATASET_NAMES=(
     # "CEB-Adult"
     # "CEB-Credit"
     # "CEB-Jigsaw"
-    "BBQ"
+    # "BBQ"
     # "BiasLens-Choices"
-    "IAT"
-    "SocialStigmaQA"
+    # "IAT"
+    # "SocialStigmaQA"
     # "StereoSet-Intersentence"
 
     # The following are deprecated:
