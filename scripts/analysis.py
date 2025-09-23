@@ -1060,16 +1060,6 @@ def load_open_dataset_cached_indiv_metrics(dataset_name="CEB-Continuation-S", re
     return df_data
 
 
-def groupby_avg(df, groupby_col, value_col="is_significant", num_round=4, **extra_metadata):
-    """
-    Compute groupby-average on value column
-    """
-    df_curr = df.groupby(groupby_col)[value_col].mean().round(num_round).reset_index()
-    for k, v in extra_metadata.items():
-        df_curr[k] = v
-    return df_curr
-
-
 ################################################################################
 #                           Generate Figures/Tables                            #
 ################################################################################
@@ -1194,7 +1184,6 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
     save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig2b-effect_size.svg")
     plt.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close()
-
 
     ############################################################################
     #      2C. % Response Flipped Among Significantly vs. Insignificantly      #
@@ -1333,142 +1322,107 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
     # )
 
 
-# Figure 3.
-def change_in_probabilities():
-    datasets = [
-        "CEB-Recognition", "CEB-Jigsaw",
-        "CEB-Adult", "CEB-Credit",
-        "BiasLens-Choices",
-        "SocialStigmaQA",
-        "BBQ",
-        "IAT",
-        "StereoSet-Intersentence",
-        # "StereoSet-Intrasentence",
-        # "BiasLens-YesNo",
-    ]
-
+# Figure 3
+def change_in_uncertainty():
+    assert False
+    
     accum_probs = []
-    for dataset in datasets:
+    for dataset in ALL_CLOSED_DATASETS:
         df_probs_changed = load_closed_dataset_entropy_changes(dataset)
         if df_probs_changed.empty:
             continue
         accum_probs.append(df_probs_changed)
 
-    # Create absolute change
-    df_probs = pd.concat(accum_probs)
-    df_probs["abs_probs_diff"] = df_probs["res_prob_chosen_base_modified_diff"].abs()
-    df_probs["w_bits"] = df_probs["q_method_full"].map(
-        lambda x: re.search(r"(W8A16|W8A8|W4A16)", x).groups(1)[0]
-    )
+    df_data = pd.concat(accum_probs)
+    # Rename flipping
+    df_data["flip_status"] = df_data["Flipped"].map(lambda x: "changed" if x else "unchanged")
 
-    # Plot initial choice probability change
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    viz_utils.numplot(
-        df_probs,
-        plot_type="box", showfliers=False, width=0.85,
-        y="dataset",
-        x="res_prob_chosen_base_modified_diff",
-        hue="w_bits", hue_order=["W8A16", "W4A16"],
-        color="#C78E72",
-        x_lim=[-0.5, 0.5],
-        ylabel="",
-        xlabel="Change in Choice Probability",
-        title="",
-        legend=True, horizontal_legend=True,
+    # Dataset order
+    unique_datasets = df_data["dataset"].unique().tolist()
+    closed_dataset_order = []
+    for d in ALL_CLOSED_DATASETS:
+        dataset_name = RENAME_DATASET.get(d, d)
+        if dataset_name not in closed_dataset_order and dataset_name in unique_datasets:
+            closed_dataset_order.append(dataset_name)
+
+    ############################################################################
+    #                   A. Response Flipping vs. Entropy                       #
+    ############################################################################
+    plt.close()
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    palette = [
+        "#D3A9F5",  # Lavender
+        "#FF7F4C",  # Bright Orange
+    ]
+    viz_utils.catplot(
+        df_data,
+        plot_type="kde",
+        fill=True,
+        common_norm=False,
+        x="normalized_entropy_base",
+        hue="flip_status",
+        hue_order=["changed", "unchanged"],
+        palette=palette,
+        ylabel="Response Flipping",
+        xlabel="Initial Model Uncertainty",
+        legend=True,
+        # TODO: Determine a good xlim
+        # x_lim=[0, 1],
         save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-        save_fname="fig3-change_in_prob.svg",
+        save_fname="fig3a-flipping_under_uncertainty.svg",
     )
 
-    # Plot change in entropy
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    viz_utils.numplot(
-        df_probs,
-        plot_type="box", showfliers=False, width=0.85,
-        y="dataset",
-        x="norm_entropy_diff",
-        hue="w_bits", hue_order=["W8A16", "W4A16"],
-        color="#C78E72",
-        x_lim=[-0.35, 0.35],
-        ylabel="",
-        xlabel="Change in Normalized Entropy",
-        title="",
-        legend=False,
-        save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-        save_fname="fig3-change_in_entropy.svg",
-    )
 
-    # Supp Figure 1. Expanded version
-    if True:
-        hue_order = [
-            "RTN W8A16",
-            "RTN W4A16",
-            "RTN W4A16 + SQ",
-            "GPTQ W4A16",
-            "AWQ W4A16"
-        ]
-
-        # Plot initial choice probability change
-        viz_utils.set_theme(tick_scale=3, figsize=(15, 10))
-        viz_utils.numplot(
-            df_probs,
-            plot_type="box", showfliers=False, width=0.85,
-            y="dataset",
-            x="res_prob_chosen_base_modified_diff",
-            hue="q_method_full", hue_order=hue_order,
-            color="#C78E72",
-            x_lim=[-0.5, 0.5],
-            ylabel="",
-            xlabel="Change in Choice Probability",
-            title="",
-            legend=True, horizontal_legend=True,
-            save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-            save_fname="sup_fig2-change_in_prob-all.svg",
-        )
-
-        # Plot change in entropy
-        viz_utils.set_theme(tick_scale=3, figsize=(15, 10))
-        viz_utils.numplot(
-            df_probs,
-            plot_type="box", showfliers=False, width=0.85,
-            y="dataset",
-            x="norm_entropy_diff",
-            hue="q_method_full", hue_order=hue_order,
-            color="#C78E72",
-            x_lim=[-0.35, 0.35],
-            ylabel="",
-            xlabel="Change in Normalized Entropy",
-            title="",
-            legend=False,
-            save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-            save_fname="sup_fig2-change_in_entropy-all.svg",
-        )
-
-
-    # Plot entropy with response flipping
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    fig, axs = plt.subplots(len(datasets), 1, sharex=True)
-    for idx, dataset in enumerate(datasets):
-        df_probs_data = accum_probs[idx]
-        df_probs_data["normalized_entropy_base_round"] = df_probs_data["normalized_entropy_base"].round(1).abs()
-        df_flip_by_entropy = df_probs_data.groupby("normalized_entropy_base_round")["Flipped"].mean().reset_index()
+    ############################################################################
+    #        B. Entropy Distribution Before and After Quantization             #
+    #############################################################################
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    fig, axs = plt.subplots(len(closed_dataset_order), 1, sharex=True)
+    for idx, dataset in enumerate(closed_dataset_order):
+        df_dataset = df_data[df_data["dataset"] == RENAME_DATASET.get(dataset, dataset)]
         plot_kwargs = {
             "xlabel": "",
-            "tick_params": {"labelbottom": False, "bottom": False, "labelleft": False, "left": False}
-        }
-        if idx == (len(datasets) - 1):
-            plot_kwargs["xlabel"] = "Normalized Entropy"
+            "tick_params": {
+                "labelbottom": False,
+                "bottom": False,
+                "labelleft": False,
+                "left": False
+        }}
+        if idx == (len(closed_dataset_order) - 1):
+            plot_kwargs["xlabel"] = "Model Uncertainty"
             plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
+            plot_kwargs["legend"] = True
+
+        # 1. Plot unquantized dataset model uncertainty
+        df_base = df_dataset.groupby(["model_base", "idx"]).sample(n=1)
         viz_utils.catplot(
-            df_flip_by_entropy,
-            plot_type="bar",
-            color="#B85C5C",
-            y="Flipped",
-            x="normalized_entropy_base_round",
-            y_lim=[0, 0.5],
-            ylabel=RENAME_DATASET.get(dataset, dataset),
+            df_base,
+            plot_type="kde", fill=True,
+            color="#FF7F4C",
+            x="normalized_entropy_base",
+            label="original",
+            ylabel="",
+            # TODO: Add x-limits
+            # x_lim=[0, 0.5],
             ax=axs[idx],
             **plot_kwargs,
         )
+
+        # 2. Plot quantized dataset model uncertainty
+        viz_utils.catplot(
+            df_dataset,
+            plot_type="kde", fill=True,
+            color="#6E82B5",
+            x="normalized_entropy_modified",
+            label="after quantization",
+            ylabel="",
+            # TODO: Add x-limits
+            # x_lim=[0, 0.5],
+            ax=axs[idx],
+            **plot_kwargs,
+        )
+
+        # Add dataset label
         axs[idx].set_ylabel(
             RENAME_DATASET.get(dataset, dataset),
             rotation=0,
@@ -1477,29 +1431,139 @@ def change_in_probabilities():
             labelpad=30,
         )
 
+    # Save
     fig.subplots_adjust(hspace=0.5)
-    save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig3-entropy_to_flipping.svg")
+    save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig3b-entropy_before_after_quant.svg")
     plt.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close()
 
-    # Plot how probability changes before and after quantization
-    # df_probs["res_prob_chosen_modified"] = df_probs["res_prob_chosen_base"] + df_probs["res_prob_chosen_base_modified_diff"]
-    # viz_utils.set_theme(tick_scale=3, figsize=(20, 20))
-    # viz_utils.numplot(
-    #     df_probs[df_probs["dataset"] == "Jigsaw"],
-    #     plot_type="displot", kind="kde",
-    #     # color="#F4A2A2",
-    #     x="res_prob_chosen_base",
-    #     y="res_prob_chosen_modified",
-    #     hue="Flipped",
-    #     x_lim=[0, 1],
-    #     y_lim=[0, 1],
-    #     # xlabel="Initial Choice Probability",
-    #     # ylabel="Percentage Flipped",
-    #     title=None,
-    #     save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-    #     save_fname="fig3-prob_flipping.svg"
+
+    ############################################################################
+    #                        C. RTN W4A16 vs. W8A16                            #
+    ############################################################################
+    # Filter for RTN W4A16 and W8A16
+    w4_mask = df_data["q_method_full"].map(lambda x: x.endswith("RTN W4A16"))
+    w8_mask = df_data["q_method_full"].map(lambda x: x.endswith("RTN W8A16"))
+
+    df_data_w4 = df_data[w4_mask]
+    df_data_w8 = df_data[w8_mask]
+
+    # Plot for each dataset
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    fig, axs = plt.subplots(len(closed_dataset_order), 1, sharex=True)
+    for idx, dataset in enumerate(closed_dataset_order):
+        df_data_w4_dataset = df_data_w4[df_data_w4["dataset"] == RENAME_DATASET.get(dataset, dataset)]
+        df_data_w8_dataset = df_data_w8[df_data_w8["dataset"] == RENAME_DATASET.get(dataset, dataset)]
+        plot_kwargs = {
+            "xlabel": "",
+            "tick_params": {
+                "labelbottom": False,
+                "bottom": False,
+                "labelleft": False,
+                "left": False
+        }}
+        if idx == (len(closed_dataset_order) - 1):
+            plot_kwargs["xlabel"] = "Change in Model Uncertainty"
+            plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
+
+        # TODO: Assign a color
+        palette = [
+            "#A9D9B2",  # Pale Green
+            "#FF7F4C",  # Bright Orange
+            "#6E82B5",  # Dusty Blue
+            "#C78E72",  # Muted Clay
+            "#F6D07F",  # Warm Yellow
+        ]
+
+        # 1. Plot change in uncertainty RTN W4A16 dataset model uncertainty
+        viz_utils.catplot(
+            df_data_w4_dataset,
+            plot_type="kde", fill=True,
+            color="#C78E72",
+            x="norm_entropy_diff",
+            label="RTN W4A16",
+            ylabel="",
+            # TODO: Add x-limits
+            # x_lim=[0, 0.5],
+            ax=axs[idx],
+            **plot_kwargs,
+        )
+
+        # 2. Plot quantized dataset model uncertainty
+        viz_utils.catplot(
+            df_data_w8_dataset,
+            plot_type="kde", fill=True,
+            color="#A9D9B2",
+            x="norm_entropy_diff",
+            label="RTN W8A16",
+            ylabel="",
+            # TODO: Add x-limits
+            # x_lim=[0, 0.5],
+            ax=axs[idx],
+            **plot_kwargs,
+        )
+
+        # Add dataset label
+        axs[idx].set_ylabel(
+            RENAME_DATASET.get(dataset, dataset),
+            rotation=0,
+            ha="right",
+            va="center",
+            labelpad=30,
+        )
+
+    # Save
+    fig.subplots_adjust(hspace=0.5)
+    save_path = os.path.join(
+        config.DIR_ANALYSIS, "aggregate_metrics",
+        "fig3c-uncertainty_changes_in_w4_vs_w8.svg",
+    )
+    plt.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close()
+
+
+    ############################################################################
+    #                              Deprecated                                  #
+    ############################################################################
+    # df_data["abs_probs_diff"] = df_data["res_prob_chosen_base_modified_diff"].abs()
+    # df_data["w_bits"] = df_data["q_method_full"].map(
+    #     lambda x: re.search(r"(W8A16|W8A8|W4A16)", x).groups(1)[0]
     # )
+
+    # # Plot initial choice probability change
+    # viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+    # viz_utils.numplot(
+    #     df_probs,
+    #     plot_type="box", showfliers=False, width=0.85,
+    #     y="dataset",
+    #     x="res_prob_chosen_base_modified_diff",
+    #     hue="w_bits", hue_order=["W8A16", "W4A16"],
+    #     color="#C78E72",
+    #     x_lim=[-0.5, 0.5],
+    #     ylabel="",
+    #     xlabel="Change in Choice Probability",
+    #     title="",
+    #     legend=True, horizontal_legend=True,
+    #     save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+    #     save_fname="fig3-change_in_prob.svg",
+    # )
+
+    # # Plot change in entropy
+    # viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+    # viz_utils.numplot(
+    #     df_probs,
+    #     plot_type="box", showfliers=False, width=0.85,
+    #     y="dataset",
+    #     x="norm_entropy_diff",
+    #     hue="w_bits", hue_order=["W8A16", "W4A16"],
+    #     color="#C78E72",
+    #     x_lim=[-0.35, 0.35],
+    #     ylabel="",
+    #     xlabel="Change in Normalized Entropy",
+    #     title="",
+    #     legend=False,
+    #     save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+    #     save_fname="
 
 
 # Figure 4.
@@ -1604,6 +1668,7 @@ def factors_related_to_response_flipping():
             labelpad=30,
         )
 
+    # Save
     fig.subplots_adjust(hspace=0.5)
     save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig4-flipping_by_question.svg")
     plt.savefig(save_path, bbox_inches="tight", dpi=300)
@@ -1699,7 +1764,7 @@ def change_in_response_by_social_group_bbq():
     }
 
     ############################################################################
-    #                         Group Across Models                              #
+    #                        C. RTN W4A16 vs. W8A16                            #
     ############################################################################
     # Group across models
     df_across_all_models = compute_groupby_bias_flip_diff(
