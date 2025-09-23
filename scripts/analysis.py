@@ -1414,7 +1414,6 @@ def change_in_uncertainty():
         )
 
     # Save
-    plt.legend()
     plt.tight_layout()
     fig.subplots_adjust(hspace=0.5)
     save_path = os.path.join(
@@ -1524,7 +1523,6 @@ def change_in_uncertainty():
         )
 
     # Save
-    plt.legend()
     plt.tight_layout()
     fig.subplots_adjust(hspace=0.5)
     save_path = os.path.join(
