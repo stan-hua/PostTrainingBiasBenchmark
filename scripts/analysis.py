@@ -1398,6 +1398,7 @@ def change_in_uncertainty():
             hue_order=["response unchanged", "response changed"],
             palette=palette,
             ylabel=RENAME_DATASET.get(dataset, dataset),
+            legend=True,
             x_lim=[0, 1],
             ax=axs[idx],
             **plot_kwargs,
