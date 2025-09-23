@@ -165,7 +165,7 @@ FMT_ASSISTANT_KEY = "{turn}-turn Conv Response"
 #                               Directory Paths                                #
 ################################################################################
 # Directory paths
-DIR_PROJECT = os.path.dirname(__file__)
+DIR_PROJECT = os.path.realpath(os.path.dirname(__file__))
 
 # Path to datasets directory
 DIR_DATA = os.path.join(DIR_PROJECT, "data")
