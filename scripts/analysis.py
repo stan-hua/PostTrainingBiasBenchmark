@@ -1351,8 +1351,8 @@ def change_in_uncertainty():
     plt.close()
     viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
     palette = [
-        "#D3A9F5",  # Lavender
-        "#FF7F4C",  # Bright Orange
+        "#6E82B5",
+        "#F6D07F",
     ]
     # viz_utils.catplot(
     #     df_data,
