@@ -124,6 +124,13 @@ REVERSE_DATASET_MAP = {v:k for k,v in RENAME_DATASET.items()}
 ALL_CLOSED_DATASETS = config.ALL_CLOSED_DATASETS
 ALL_OPEN_DATASETS = config.ALL_OPEN_DATASETS
 
+# Dataset order (for plots)
+ALL_DATASETS = ALL_CLOSED_DATASETS + ALL_OPEN_DATASETS
+DATASET_ORDER = []
+for d in ALL_DATASETS:
+    if RENAME_DATASET.get(d, d) not in DATASET_ORDER:
+        DATASET_ORDER.append(RENAME_DATASET.get(d, d))
+
 
 # Simple function filter out model based on quantization in name
 def filter_quant(name, keep_w8a8=False):
@@ -957,7 +964,13 @@ def load_open_dataset_agg_tests(dataset_name):
         "bootstrap-bias_score_diff-significance.csv")
     )
 
+    # Add dataset name
     df_data["dataset"] = RENAME_DATASET.get(dataset_name, dataset_name)
+
+    # Add model metadata
+    model_metadata = pd.DataFrame(df_data["model_modified"].map(extract_model_metadata_from_name).tolist())
+    df_data = pd.concat([df_data.reset_index(drop=True), model_metadata], axis=1)
+
     return df_data
 
 
@@ -966,7 +979,9 @@ def load_open_dataset_cached_indiv_metrics(dataset_name="CEB-Continuation-S", re
     Load cached individual metrics for an open-ended dataset
     """
     # CASE 1: CEB-Continuation / CEB-Conversation / FMT10K
-    if dataset_name in ["CEB-Continuation", "CEB-Conversation", "FMT10K-IM"]:
+    if dataset_name in ["CEB-Continuation", "CEB-Conversation", "FMT10K-IM", "FMT10K"]:
+        if dataset_name == "FMT10K":
+            dataset_name += "-IM"
         accum_data = []
         for name in [f"{dataset_name}-T", f"{dataset_name}-S"]:
             accum_data.append(load_open_dataset_cached_indiv_metrics(name, overwrite))
@@ -981,12 +996,17 @@ def load_open_dataset_cached_indiv_metrics(dataset_name="CEB-Continuation-S", re
     # Load, if already done
     if os.path.exists(save_path) and not overwrite:
         df_data = pd.read_csv(save_path)
-        df_data["dataset"] = df_data["dataset"].map(lambda x: RENAME_DATASETs.get(x, x))
+        df_data["dataset"] = df_data["dataset"].map(lambda x: RENAME_DATASET.get(x, x))
         df_data = df_data[df_data["model_base"].isin(KEEP_BASE_MODELS)]
         df_data = df_data[~df_data["model_modified"].map(filter_quant)]
         if "descriptor" in df_data.columns:
             df_data["social_group"] = df_data["descriptor"]
+        # Flipped
+        df_data["Flipped"] = df_data["eval_llama-is_safe_base"] != df_data["eval_llama-is_safe_modified"]
+        df_data["Bias_Flipped"] = df_data["Flipped"]
         return df_data
+
+    LOGGER.info(f"[Caching Indiv Metrics] Starting for `{dataset_name}`")
 
     # By default, remove response columns to save space
     if remove_cols is None:
@@ -995,7 +1015,7 @@ def load_open_dataset_cached_indiv_metrics(dataset_name="CEB-Continuation-S", re
         fmt_remove_cols.extend([f"{col} Response" for col in fmt_remove_cols])
         remove_cols.extend(fmt_remove_cols)
     df_data = supp_load_pairwise_differences([dataset_name], remove_cols=remove_cols)
-    df_data["dataset"] = df_data["dataset"].map(lambda x: RENAME_DATASETs.get(x, x))
+    df_data["dataset"] = df_data["dataset"].map(lambda x: RENAME_DATASET.get(x, x))
 
     # Filter models
     df_data = df_data[df_data["model_base"].isin(KEEP_BASE_MODELS)]
@@ -1021,6 +1041,10 @@ def load_open_dataset_cached_indiv_metrics(dataset_name="CEB-Continuation-S", re
         axis=1
     ).tolist())
     df_data = pd.concat([df_data.reset_index(drop=True), df_rouge_scores], axis=1)
+
+    # Flipped
+    df_data["Flipped"] = df_data["eval_llama-is_safe_base"] != df_data["eval_llama-is_safe_modified"]
+    df_data["Bias_Flipped"] = df_data["Flipped"]
 
     # Drop response columns
     df_data = df_data.drop(columns=["res_base", "res_modified"])
@@ -1078,17 +1102,12 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
         alpha=alpha,
     )
 
+    # Dataset order
+    dataset_order = [d for d in DATASET_ORDER if d in df_data["dataset"].unique()]
+
     ############################################################################
     #       2A. Plot proportion of non-significant vs. significant changes     #
     ############################################################################
-    # Dataset order
-    all_datasets = ALL_CLOSED_DATASETS + ALL_OPEN_DATASETS
-    dataset_order = []
-    for d in all_datasets:
-        dataset_name = RENAME_DATASET.get(d, d)
-        if dataset_name not in dataset_order:
-            dataset_order.append(dataset_name)
-
     # Prepare data
     perc_sig = df_data.groupby(["dataset"]).apply(
         lambda df: 100 * df["is_significant"].mean()
@@ -1145,7 +1164,9 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
     # Plot
     viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
     fig, axs = plt.subplots(len(sig_datasets), 1, sharex=True)
-    curr_dataset_order = [d for d in dataset_order if d in sig_datasets]
+
+    # Dataset order
+    curr_dataset_order = [d for d in DATASET_ORDER if d in sig_datasets]
     for idx, dataset in enumerate(curr_dataset_order):
         df_dataset = df_sig_only[df_sig_only["dataset"] == dataset]
         # Create plot kwargs
@@ -1189,20 +1210,14 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
     #      2C. % Response Flipped Among Significantly vs. Insignificantly      #
     ############################################################################
     # Dataset order
-    unique_datasets = df_data["dataset"].unique().tolist()
-    closed_dataset_order = []
-    for d in ALL_CLOSED_DATASETS:
-        dataset_name = RENAME_DATASET.get(d, d)
-        if dataset_name not in closed_dataset_order and dataset_name in unique_datasets:
-            closed_dataset_order.append(dataset_name)
+    closed_datasets = set([RENAME_DATASET.get(d, d) for d in ALL_CLOSED_DATASETS])
 
     # Filter for significant
-    df_closed = df_data[df_data["dataset"].isin(closed_dataset_order)]
-    df_sig = df_closed[df_closed["is_significant"]]
-    df_unsig = df_closed[~df_closed["is_significant"]]
+    df_sig = df_data[df_data["is_significant"]]
+    df_unsig = df_data[~df_data["is_significant"]]
 
     accum_flipping = []
-    for dataset in closed_dataset_order:
+    for dataset in dataset_order:
         # Filter for dataset
         df_sig_dataset = df_sig[df_sig["dataset"] == dataset]
         df_unsig_dataset = df_unsig[df_unsig["dataset"] == dataset]
@@ -1211,14 +1226,17 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
         join_cols = ["model_base", "model_modified", "social_axis"]
 
         # Load individual responses
-        df_entropy_changes = load_closed_dataset_entropy_changes(dataset)
+        if dataset in closed_datasets:
+            df_indiv_changes = load_closed_dataset_entropy_changes(dataset)
+        else:
+            df_indiv_changes = load_open_dataset_cached_indiv_metrics(dataset)
 
         # Compute response flipping by social axis
         # NOTE: This is to make it more efficient later
-        df_flipping = df_entropy_changes.groupby(join_cols)["Flipped"].mean()
+        df_flipping = df_indiv_changes.groupby(join_cols)["Flipped"].mean()
         df_flipping.name = "prop_flipped"
         df_flipping = df_flipping.reset_index()
-        df_size = df_entropy_changes.groupby(join_cols).size()
+        df_size = df_indiv_changes.groupby(join_cols).size()
         df_size.name = "num_responses"
         df_size = df_size.reset_index()
 
@@ -1249,7 +1267,7 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
         hue_order=[True, False],
         ylabel="",
         xlabel="% Responses Flipped",
-        order=closed_dataset_order,
+        order=dataset_order,
         legend=True,
         save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
         save_fname="fig2c-response_flipping_by_sig.svg",
@@ -1322,7 +1340,7 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
     # )
 
 
-# Figure 3
+# Figure 3.
 def change_in_uncertainty():
     accum_probs = []
     for dataset in ALL_CLOSED_DATASETS:
@@ -1336,14 +1354,11 @@ def change_in_uncertainty():
     df_data["flip_status"] = df_data["Flipped"].map(lambda x: "response changed" if x else "response unchanged")
 
     # Dataset order
-    unique_datasets = df_data["dataset"].unique().tolist()
-    closed_dataset_order = []
-    for d in ALL_CLOSED_DATASETS:
-        dataset_name = RENAME_DATASET.get(d, d)
-        if dataset_name not in closed_dataset_order and dataset_name in unique_datasets:
-            closed_dataset_order.append(dataset_name)
-
-    # df_curr = df_data[(df_data["normalized_entropy_base"] < 0.8) & (df_data["normalized_entropy_base"] > 0.6)]
+    closed_datasets = set([RENAME_DATASET.get(d, d) for d in ALL_CLOSED_DATASETS])
+    closed_dataset_order = [
+        d for d in DATASET_ORDER
+        if d in df_data["dataset"].unique() and d in closed_datasets
+    ]
 
     ############################################################################
     #                   A. Response Flipping vs. Entropy                       #
@@ -1389,16 +1404,14 @@ def change_in_uncertainty():
             plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
             plot_kwargs["legend"] = True
 
-
         viz_utils.catplot(
             df_dataset,
-            plot_type="kde", fill=True,
+            plot_type="kde", fill=True, common_norm=False,
             x="normalized_entropy_base",
             hue="flip_status",
-            hue_order=["response unchanged", "response changed"],
+            hue_order=["response changed", "response unchanged"],
             palette=palette,
             ylabel=RENAME_DATASET.get(dataset, dataset),
-            legend=True,
             x_lim=[0, 1],
             ax=axs[idx],
             **plot_kwargs,
@@ -1483,8 +1496,6 @@ def change_in_uncertainty():
         if idx == (len(closed_dataset_order) - 1):
             plot_kwargs["xlabel"] = "Change in Model Uncertainty"
             plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
-            plot_kwargs["legend"] = True
-
 
         # 1. Plot RTN W8A16 change in model uncertainty
         viz_utils.catplot(
@@ -1498,7 +1509,6 @@ def change_in_uncertainty():
             ax=axs[idx],
             **plot_kwargs,
         )
-
 
         # 2. Plot RTN W4A16 change in model uncertainty
         viz_utils.catplot(
@@ -1523,6 +1533,7 @@ def change_in_uncertainty():
         )
 
     # Save
+    axs[idx].legend()
     plt.tight_layout()
     fig.subplots_adjust(hspace=0.5)
     save_path = os.path.join(
@@ -1578,29 +1589,62 @@ def change_in_uncertainty():
 
 
 # Figure 4.
-def factors_related_to_response_flipping():
-    datasets = [
-        "CEB-Recognition", "CEB-Jigsaw",
-        "CEB-Adult", "CEB-Credit",
-        "BiasLens-Choices",
-        "SocialStigmaQA",
-        "BBQ",
-        "IAT",
-        "StereoSet-Intersentence",
-        # "StereoSet-Intrasentence",
-        # "BiasLens-YesNo",
+def factors_related_to_response_flipping(correction_method="fdr_bh", alpha=0.05):
+    # Accumulate p-values across models
+    accum_data = [load_closed_dataset_cached_agg_metrics(d) for d in ALL_CLOSED_DATASETS]
+    accum_data.extend([load_open_dataset_agg_tests(d) for d in ALL_OPEN_DATASETS])
+    df_data = pd.concat(accum_data)
+
+    # Apply multiple comparisons correction
+    df_data = adjust_for_multiple_comparisons(
+        df_data,
+        correction_method=correction_method,
+        alpha=alpha,
+    )
+
+    # Dataset order
+    dataset_order = [d for d in DATASET_ORDER if d in df_data["dataset"].unique()]
+
+    ############################################################################
+    #         4A. Quantization Method x Dataset Behavior Flipping              #
+    ############################################################################
+    quant_order = [
+        "RTN W8A16",
+        "RTN W4A16",
+        "RTN W4A16 + SQ",
+        "GPTQ W4A16",
+        "AWQ W4A16"
     ]
 
-    accum_probs = []
-    for dataset in datasets:
-        df_probs_changed = load_closed_dataset_entropy_changes(dataset)
-        if df_probs_changed.empty:
-            continue
-        accum_probs.append(df_probs_changed)
+    df_quant = df_data.groupby(["q_method_full", "dataset"])["is_significant"].mean().reset_index()
+    df_quant = df_quant.pivot(index="q_method_full", columns="dataset", values="is_significant")
+    df_quant = df_quant.loc[quant_order, dataset_order]
+    # Add average column
+    avg = df_quant.mean(axis=1)
+    avg.name = "Avg"
+    df_quant = pd.concat([df_quant, avg], axis=1)
+    # Convert to percentages
+    df_quant = (df_quant * 100).round().astype(int)
+    # Plot heatmap
+    viz_utils.set_theme(tick_scale=3, figsize=(6, 10))
+    viz_utils.catplot(
+        df_quant.T,
+        plot_type="heatmap",
+        cmap="BuGn",
+        linewidths=2,    # Add lines between cells for clarity
+        cbar_kws={"label": "Behavior Flipping"},
+        ylabel="",
+        xlabel="",
+        tick_params={"axis": "x", "labelrotation": 90},
+        # title="Significant Change in Bias Scores",
+        save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+        save_fname="fig4a-behavior_flipping_by_quant.svg",
+    )
 
-    df_probs = pd.concat(accum_probs)
 
-    # Fig 4a. Models
+    ############################################################################
+    #                4B. Models x Dataset Behavior Flipping                    #
+    ############################################################################
     model_order = [
         "llama3.1-8b-instruct", "llama3.2-1b-instruct", "llama3.2-3b-instruct",
         "ministral-8b-instruct", "qwen2-7b-instruct",
@@ -1619,10 +1663,9 @@ def factors_related_to_response_flipping():
         "qwen2.5-7b-instruct": "Qwen 2.5 7B",
         "qwen2.5-14b-instruct": "Qwen 2.5 14B",
     }
-    dataset_order = [RENAME_DATASET.get(dataset, dataset) for dataset in datasets]
-    df_models = df_probs.groupby(["model_base", "dataset"])["Flipped"].mean().reset_index()
-    df_models = df_models.pivot(index="model_base", columns="dataset", values="Flipped")
-    df_models = df_models[dataset_order]
+    df_models = df_data.groupby(["model_base", "dataset"])["is_significant"].mean().reset_index()
+    df_models = df_models.pivot(index="model_base", columns="dataset", values="is_significant")
+    df_models = df_models.loc[model_order, dataset_order]
     # Add average column
     avg = df_models.mean(axis=1)
     avg.name = "Avg"
@@ -1633,60 +1676,62 @@ def factors_related_to_response_flipping():
     # Rename models
     df_models.index = df_models.index.map(lambda x: rename_models[x])
     # Plot heatmap
-    viz_utils.set_theme(tick_scale=3, figsize=(12, 12))
+    viz_utils.set_theme(tick_scale=3, figsize=(12, 10))
     viz_utils.catplot(
-        df_models,
+        df_models.T,
         plot_type="heatmap",
         cmap="OrRd",
         linewidths=2,    # Add lines between cells for clarity
-        cbar_kws={"label": "Flipping"},
+        cbar_kws={"label": "Behavior Flipping"},
         ylabel="",
         xlabel="",
         tick_params={"axis": "x", "labelrotation": 90},
         # title="Significant Change in Bias Scores",
         save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-        save_fname="fig4-response_flipping_by_models.svg",
+        save_fname="fig4b-behavior_flipping_by_model.svg",
     )
 
-    # Fig 4b. Certain questions receive the most response flipping
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    fig, axs = plt.subplots(len(datasets), 1, sharex=True)
-    for idx, dataset in enumerate(datasets):
-        df_dataset = df_probs[df_probs["dataset"] == RENAME_DATASET.get(dataset, dataset)]
-        df_by_questions = df_dataset.groupby("idx")["Flipped"].mean().round(3).reset_index(name="response_flipped")
-        plot_kwargs = {
-            "xlabel": "",
-            "tick_params": {"labelbottom": False, "bottom": False, "labelleft": False, "left": False}
-        }
-        if idx == (len(datasets) - 1):
-            plot_kwargs["xlabel"] = "Percentage of Responses Flipped by Question"
-            plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
-        viz_utils.catplot(
-            df_by_questions,
-            plot_type="kde", fill=True,
-            color="#B85C5C",
-            x="response_flipped",
-            ylabel=RENAME_DATASET.get(dataset, dataset),
-            x_lim=[0, 0.5],
-            ax=axs[idx],
-            **plot_kwargs,
-        )
-        axs[idx].set_ylabel(
-            RENAME_DATASET.get(dataset, dataset),
-            rotation=0,
-            ha="right",
-            va="center",
-            labelpad=30,
-        )
+    ############################################################################
+    #                              Deprecated                                  #
+    ############################################################################
+    # viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+    # fig, axs = plt.subplots(len(datasets), 1, sharex=True)
+    # for idx, dataset in enumerate(datasets):
+    #     df_dataset = df_data[df_data["dataset"] == RENAME_DATASET.get(dataset, dataset)]
+    #     df_by_questions = df_dataset.groupby("idx")["Flipped"].mean().round(3).reset_index(name="response_flipped")
+    #     plot_kwargs = {
+    #         "xlabel": "",
+    #         "tick_params": {"labelbottom": False, "bottom": False, "labelleft": False, "left": False}
+    #     }
+    #     if idx == (len(datasets) - 1):
+    #         plot_kwargs["xlabel"] = "Percentage of Responses Flipped by Question"
+    #         plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
+    #     viz_utils.catplot(
+    #         df_by_questions,
+    #         plot_type="kde", fill=True,
+    #         color="#B85C5C",
+    #         x="response_flipped",
+    #         ylabel=RENAME_DATASET.get(dataset, dataset),
+    #         x_lim=[0, 0.5],
+    #         ax=axs[idx],
+    #         **plot_kwargs,
+    #     )
+    #     axs[idx].set_ylabel(
+    #         RENAME_DATASET.get(dataset, dataset),
+    #         rotation=0,
+    #         ha="right",
+    #         va="center",
+    #         labelpad=30,
+    #     )
 
-    # Save
-    fig.subplots_adjust(hspace=0.5)
-    save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig4-flipping_by_question.svg")
-    plt.savefig(save_path, bbox_inches="tight", dpi=300)
-    plt.close()
+    # # Save
+    # fig.subplots_adjust(hspace=0.5)
+    # save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig4-flipping_by_question.svg")
+    # plt.savefig(save_path, bbox_inches="tight", dpi=300)
+    # plt.close()
 
 
-# Figure 4c.
+# Figure 5.
 def change_in_response_by_social_group_bbq():
     save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
     os.makedirs(save_dir, exist_ok=True)
