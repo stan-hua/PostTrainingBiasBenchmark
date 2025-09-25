@@ -530,7 +530,10 @@ def merge_chatgpt_parsed(df_original, dataset_name):
     save_dir = os.path.join(DIR_DATASET_AUDIT, "aggregate_results")
     # Load data
     # CASE 1: CEB-Continuation / CEB-Conversation / FMT10K
-    if dataset_name in ["CEB-Continuation", "CEB-Conversation", "FMT10K-IM"]:
+    if dataset_name in ["CEB-Continuation", "CEB-Conversation", "FMT10K-IM", "FMT10K"]:
+        # SPECIAL CASE: FMT10K
+        if dataset_name == "FMT10K":
+            dataset_name += "-IM"
         accum_eval = []
         for name in [f"{dataset_name}-T", f"{dataset_name}-S"]:
             save_fname = name.replace(" ", "_").lower() + ".csv"

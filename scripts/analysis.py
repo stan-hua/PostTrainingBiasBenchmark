@@ -7,6 +7,7 @@ Description: Used to reproduce analysis done in the paper
 # Standard libraries
 import ast
 import json
+import gc
 import logging
 import os
 import random
@@ -107,7 +108,7 @@ RENAME_DATASET = {
     "CEB-Adult": "Adult",
     "CEB-Credit": "Credit",
     "StereoSet-Intersentence": "StereoSet",
-    "BiasLens-Choices": "BiasLens",
+    "BiasLens-Choices": "BiasLens-Choices",
 
     # Open-Ended Datasets
     "CEB-Continuation-S": "CEB-Continuation",
@@ -996,6 +997,9 @@ def load_open_dataset_cached_indiv_metrics(dataset_name="CEB-Continuation-S", re
     # Load, if already done
     if os.path.exists(save_path) and not overwrite:
         df_data = pd.read_csv(save_path)
+        # CASE: BiasLens renamed
+        if df_data["dataset"].unique().tolist()[0] == "BiasLens":
+            df_data["dataset"] = "BiasLens-GenWhy"
         df_data["dataset"] = df_data["dataset"].map(lambda x: RENAME_DATASET.get(x, x))
         df_data = df_data[df_data["model_base"].isin(KEEP_BASE_MODELS)]
         df_data = df_data[~df_data["model_modified"].map(filter_quant)]
@@ -1088,6 +1092,254 @@ def load_open_dataset_cached_indiv_metrics(dataset_name="CEB-Continuation-S", re
 #                           Generate Figures/Tables                            #
 ################################################################################
 # Figure 2.
+def change_in_uncertainty():
+    accum_probs = []
+    for dataset in ALL_CLOSED_DATASETS:
+        df_probs_changed = load_closed_dataset_entropy_changes(dataset)
+        if df_probs_changed.empty:
+            continue
+        accum_probs.append(df_probs_changed)
+
+    df_data = pd.concat(accum_probs)
+    # Rename flipping
+    df_data["flip_status"] = df_data["Flipped"].map(lambda x: "response changed" if x else "response unchanged")
+
+    # Dataset order
+    closed_datasets = set([RENAME_DATASET.get(d, d) for d in ALL_CLOSED_DATASETS])
+    closed_dataset_order = [
+        d for d in DATASET_ORDER
+        if d in df_data["dataset"].unique() and d in closed_datasets
+    ]
+
+    ############################################################################
+    #                   A. Response Flipping vs. Entropy                       #
+    ############################################################################
+    plt.close()
+    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+    palette = [
+        "#6E82B5",
+        "#F6D07F",
+    ]
+    # viz_utils.catplot(
+    #     df_data,
+    #     plot_type="kde",
+    #     fill=True,
+    #     common_norm=False,
+    #     x="normalized_entropy_base",
+    #     hue="flip_status",
+    #     hue_order=["response unchanged", "response changed"],
+    #     palette=palette,
+    #     ylabel="Density",
+    #     xlabel="Initial Model Uncertainty",
+    #     legend=True,
+    #     x_lim=[0, 1],
+    #     save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+    #     save_fname="fig3a-flipping_under_uncertainty.svg",
+    # )
+
+    # Plot for each dataset
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    fig, axs = plt.subplots(len(closed_dataset_order), 1, sharex=True)
+    for idx, dataset in enumerate(closed_dataset_order):
+        df_dataset = df_data[df_data["dataset"] == RENAME_DATASET.get(dataset, dataset)]
+        plot_kwargs = {
+            "xlabel": "",
+            "tick_params": {
+                "labelbottom": False,
+                "bottom": False,
+                "labelleft": False,
+                "left": False
+        }}
+        if idx == (len(closed_dataset_order) - 1):
+            plot_kwargs["xlabel"] = "Initial Model Uncertainty"
+            plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
+            plot_kwargs["legend"] = True
+
+        viz_utils.catplot(
+            df_dataset,
+            plot_type="kde", fill=False, common_norm=False, cut=0, linewidth=3,
+            x="normalized_entropy_base",
+            hue="flip_status",
+            hue_order=["response changed", "response unchanged"],
+            palette=palette,
+            ylabel=RENAME_DATASET.get(dataset, dataset),
+            x_lim=[0, 1],
+            ax=axs[idx],
+            **plot_kwargs,
+        )
+
+        # Add dataset label
+        axs[idx].set_ylabel(
+            RENAME_DATASET.get(dataset, dataset),
+            rotation=0,
+            ha="right",
+            va="center",
+            labelpad=30,
+        )
+
+    # Save
+    plt.tight_layout()
+    fig.subplots_adjust(hspace=0.5)
+    save_path = os.path.join(
+        config.DIR_ANALYSIS, "aggregate_metrics",
+        "fig2a-flipping_under_uncertainty.svg",
+    )
+    plt.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close()
+
+    ############################################################################
+    #        B. Entropy Distribution Before and After Quantization             #
+    #############################################################################
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    
+    # Prepare data
+    df_base = df_data.drop_duplicates(subset=["model_base", "idx"])[["dataset", "normalized_entropy_base"]]
+    df_base = df_base.rename(columns={"normalized_entropy_base": "Model Uncertainty"})
+    df_base["model_type"] = "original"
+
+    df_modified = df_data[["dataset", "normalized_entropy_modified"]].copy()
+    df_modified = df_modified.rename(columns={"normalized_entropy_modified": "Model Uncertainty"})
+    df_modified["model_type"] = "quantized"
+
+    df_entropy = pd.concat([df_base, df_modified])
+
+    # Uncertainty Before/After Quantization
+    viz_utils.numplot(
+        df_entropy,
+        plot_type="box", showfliers=False, width=0.85,
+        y="dataset",
+        x="Model Uncertainty",
+        hue="model_type",
+        hue_order=["original", "quantized"],
+        palette=["#FF7F4C", "#6E82B5"],
+        ylabel="",
+        xlabel="Model Uncertainty",
+        x_lim=[0, 1],
+        legend=True,
+        save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+        save_fname="fig2b-entropy_before_after_quant.svg",
+    )
+
+    ############################################################################
+    #                        C. RTN W4A16 vs. W8A16                            #
+    ############################################################################
+    # Filter for RTN W4A16 and W8A16
+    w4_mask = df_data["q_method_full"].map(lambda x: x.endswith("RTN W4A16"))
+    w8_mask = df_data["q_method_full"].map(lambda x: x.endswith("RTN W8A16"))
+
+    df_data_w4 = df_data[w4_mask]
+    df_data_w8 = df_data[w8_mask]
+
+    # Plot for each dataset
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    fig, axs = plt.subplots(len(closed_dataset_order), 1, sharex=True)
+    for idx, dataset in enumerate(closed_dataset_order):
+        df_data_w4_dataset = df_data_w4[df_data_w4["dataset"] == RENAME_DATASET.get(dataset, dataset)]
+        df_data_w8_dataset = df_data_w8[df_data_w8["dataset"] == RENAME_DATASET.get(dataset, dataset)]
+        plot_kwargs = {
+            "xlabel": "",
+            "tick_params": {
+                "labelbottom": False,
+                "bottom": False,
+                "labelleft": False,
+                "left": False
+        }}
+        if idx == (len(closed_dataset_order) - 1):
+            plot_kwargs["xlabel"] = "Change in Model Uncertainty"
+            plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
+
+        # 1. Plot RTN W8A16 change in model uncertainty
+        viz_utils.catplot(
+            df_data_w8_dataset,
+            plot_type="kde", fill=False, cut=0, linewidth=3, alpha=0.9,
+            x="norm_entropy_diff",
+            color="#6E82B5",
+            label="RTN W8A16",
+            ylabel=RENAME_DATASET.get(dataset, dataset),
+            x_lim=[-0.3, 0.3],
+            ax=axs[idx],
+            **plot_kwargs,
+        )
+
+        # 2. Plot RTN W4A16 change in model uncertainty
+        viz_utils.catplot(
+            df_data_w4_dataset,
+            plot_type="kde", fill=False, cut=0, linewidth=3, alpha=0.9,
+            x="norm_entropy_diff",
+            color="#C78E72",
+            label="RTN W4A16",
+            ylabel=RENAME_DATASET.get(dataset, dataset),
+            x_lim=[-0.3, 0.3],
+            ax=axs[idx],
+            **plot_kwargs,
+        )
+
+        # Add dataset label
+        axs[idx].set_ylabel(
+            RENAME_DATASET.get(dataset, dataset),
+            rotation=0,
+            ha="right",
+            va="center",
+            labelpad=30,
+        )
+
+    # Save
+    axs[idx].legend()
+    plt.tight_layout()
+    fig.subplots_adjust(hspace=0.5)
+    save_path = os.path.join(
+        config.DIR_ANALYSIS, "aggregate_metrics",
+        "fig2c-uncertainty_changes_in_w4_vs_w8.svg",
+    )
+    plt.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close()
+
+
+    ############################################################################
+    #                              Deprecated                                  #
+    ############################################################################
+    # df_data["abs_probs_diff"] = df_data["res_prob_chosen_base_modified_diff"].abs()
+    # df_data["w_bits"] = df_data["q_method_full"].map(
+    #     lambda x: re.search(r"(W8A16|W8A8|W4A16)", x).groups(1)[0]
+    # )
+
+    # # Plot initial choice probability change
+    # viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+    # viz_utils.numplot(
+    #     df_probs,
+    #     plot_type="box", showfliers=False, width=0.85,
+    #     y="dataset",
+    #     x="res_prob_chosen_base_modified_diff",
+    #     hue="w_bits", hue_order=["W8A16", "W4A16"],
+    #     color="#C78E72",
+    #     x_lim=[-0.5, 0.5],
+    #     ylabel="",
+    #     xlabel="Change in Choice Probability",
+    #     title="",
+    #     legend=True, horizontal_legend=True,
+    #     save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+    #     save_fname="fig2-change_in_prob.svg",
+    # )
+
+    # # Plot change in entropy
+    # viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+    # viz_utils.numplot(
+    #     df_probs,
+    #     plot_type="box", showfliers=False, width=0.85,
+    #     y="dataset",
+    #     x="norm_entropy_diff",
+    #     hue="w_bits", hue_order=["W8A16", "W4A16"],
+    #     color="#C78E72",
+    #     x_lim=[-0.35, 0.35],
+    #     ylabel="",
+    #     xlabel="Change in Normalized Entropy",
+    #     title="",
+    #     legend=False,
+    #     save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+    #     save_fname="
+
+
+# Figure 3.
 # DEPRECATED: Supplementary Table 1.
 def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
     # Accumulate p-values across models
@@ -1102,11 +1354,15 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
         alpha=alpha,
     )
 
+    # Save associated table
+    df_sig = df_data.groupby("dataset")["is_significant"].agg(["mean", "sum", "size"])
+    df_sig.to_csv(os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig3a-assoc_table.csv"))
+ 
     # Dataset order
     dataset_order = [d for d in DATASET_ORDER if d in df_data["dataset"].unique()]
 
     ############################################################################
-    #       2A. Plot proportion of non-significant vs. significant changes     #
+    #       3A. Plot proportion of non-significant vs. significant changes     #
     ############################################################################
     # Prepare data
     perc_sig = df_data.groupby(["dataset"]).apply(
@@ -1144,23 +1400,27 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
         x="perc_more_biased",
         color="#F4A2A2",
         label="more biased",
-        x_lim=[0, 25],
+        x_lim=[0, 50],
         ylabel="",
         xlabel="% With Significant Behavior Change",
         order=dataset_order,
         ax=ax,
         legend=True,
         save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-        save_fname="fig2a-perc_significant_vs_not_significant.svg",
+        save_fname="fig3a-perc_significant_vs_not_significant.svg",
     )
 
     ############################################################################
-    #        2B. Distribution of Effect Sizes Among Significant Changes        #
+    #        3B. Distribution of Effect Sizes Among Significant Changes        #
     ############################################################################
     # Filter for significant
     df_sig_only = df_data[df_data["is_significant"]]
     sig_datasets = df_sig_only["dataset"].unique().tolist()
 
+    # Compute cohens_d metrics for each dataset and save associated table
+    df_sig = df_sig_only.groupby("dataset")["cohens_d"].agg(["mean", "std", "min", "max"]).round(4)
+    df_sig.to_csv(os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig3b-assoc_table.csv"))
+ 
     # Plot
     viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
     fig, axs = plt.subplots(len(sig_datasets), 1, sharex=True)
@@ -1185,11 +1445,11 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
         # Plot KDE for each dataset
         viz_utils.catplot(
             df_dataset,
-            plot_type="kde", fill=True,
+            plot_type="kde", fill=True, cut=0,
             color="#FF7F4C",
             x="cohens_d",
             ylabel=dataset,
-            x_lim=[-10, 10],
+            x_lim=[-5, 5],
             ax=axs[idx],
             **plot_kwargs,
         )
@@ -1202,7 +1462,7 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
         )
 
     fig.subplots_adjust(hspace=0.5)
-    save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig2b-effect_size.svg")
+    save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig3b-effect_size.svg")
     plt.savefig(save_path, bbox_inches="tight", dpi=300)
     plt.close()
 
@@ -1251,26 +1511,32 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
         unsig_prop_flipped = (df_unsig_dataset["prop_flipped"] * df_unsig_dataset["num_responses"]).sum() / df_unsig_dataset["num_responses"].sum()
 
         # Store
-        accum_flipping.append({"dataset": dataset, "is_significant": True, "perc_flipped": 100*sig_prop_flipped})
-        accum_flipping.append({"dataset": dataset, "is_significant": False, "perc_flipped": 100*unsig_prop_flipped})
+        accum_flipping.append({"dataset": dataset, "sig_text": "sig. effect", "perc_flipped": 100*sig_prop_flipped})
+        accum_flipping.append({"dataset": dataset, "sig_text": "non-sig. effect", "perc_flipped": 100*unsig_prop_flipped})
+
+    # Save table
+    df_flipping = pd.DataFrame(accum_flipping)
+    df_flipping["perc_flipped"] = df_flipping["perc_flipped"].round(2)
+    df_flipping.to_csv(
+        os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig3c-assoc_table.csv"),
+        index=False)
 
     # Plot response flipping proportions by dataset
-    df_flipping = pd.DataFrame(accum_flipping)
     viz_utils.catplot(
         df_flipping,
         plot_type="bar",
         y="dataset",
         x="perc_flipped",
-        hue="is_significant",
+        hue="sig_text",
         palette=["#85B8A2",  "#7D85A7"],
         x_lim=[0, 50],
-        hue_order=[True, False],
+        hue_order=["sig. effect", "non-sig. effect"],
         ylabel="",
         xlabel="% Responses Flipped",
         order=dataset_order,
         legend=True,
         save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-        save_fname="fig2c-response_flipping_by_sig.svg",
+        save_fname="fig3c-response_flipping_by_sig.svg",
     )
 
     ################################################################################
@@ -1340,256 +1606,8 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
     # )
 
 
-# Figure 3.
-def change_in_uncertainty():
-    accum_probs = []
-    for dataset in ALL_CLOSED_DATASETS:
-        df_probs_changed = load_closed_dataset_entropy_changes(dataset)
-        if df_probs_changed.empty:
-            continue
-        accum_probs.append(df_probs_changed)
-
-    df_data = pd.concat(accum_probs)
-    # Rename flipping
-    df_data["flip_status"] = df_data["Flipped"].map(lambda x: "response changed" if x else "response unchanged")
-
-    # Dataset order
-    closed_datasets = set([RENAME_DATASET.get(d, d) for d in ALL_CLOSED_DATASETS])
-    closed_dataset_order = [
-        d for d in DATASET_ORDER
-        if d in df_data["dataset"].unique() and d in closed_datasets
-    ]
-
-    ############################################################################
-    #                   A. Response Flipping vs. Entropy                       #
-    ############################################################################
-    plt.close()
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    palette = [
-        "#6E82B5",
-        "#F6D07F",
-    ]
-    # viz_utils.catplot(
-    #     df_data,
-    #     plot_type="kde",
-    #     fill=True,
-    #     common_norm=False,
-    #     x="normalized_entropy_base",
-    #     hue="flip_status",
-    #     hue_order=["response unchanged", "response changed"],
-    #     palette=palette,
-    #     ylabel="Density",
-    #     xlabel="Initial Model Uncertainty",
-    #     legend=True,
-    #     x_lim=[0, 1],
-    #     save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-    #     save_fname="fig3a-flipping_under_uncertainty.svg",
-    # )
-
-    # Plot for each dataset
-    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
-    fig, axs = plt.subplots(len(closed_dataset_order), 1, sharex=True)
-    for idx, dataset in enumerate(closed_dataset_order):
-        df_dataset = df_data[df_data["dataset"] == RENAME_DATASET.get(dataset, dataset)]
-        plot_kwargs = {
-            "xlabel": "",
-            "tick_params": {
-                "labelbottom": False,
-                "bottom": False,
-                "labelleft": False,
-                "left": False
-        }}
-        if idx == (len(closed_dataset_order) - 1):
-            plot_kwargs["xlabel"] = "Initial Model Uncertainty"
-            plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
-            plot_kwargs["legend"] = True
-
-        viz_utils.catplot(
-            df_dataset,
-            plot_type="kde", fill=True, common_norm=False,
-            x="normalized_entropy_base",
-            hue="flip_status",
-            hue_order=["response changed", "response unchanged"],
-            palette=palette,
-            ylabel=RENAME_DATASET.get(dataset, dataset),
-            x_lim=[0, 1],
-            ax=axs[idx],
-            **plot_kwargs,
-        )
-
-        # Add dataset label
-        axs[idx].set_ylabel(
-            RENAME_DATASET.get(dataset, dataset),
-            rotation=0,
-            ha="right",
-            va="center",
-            labelpad=30,
-        )
-
-    # Save
-    plt.tight_layout()
-    fig.subplots_adjust(hspace=0.5)
-    save_path = os.path.join(
-        config.DIR_ANALYSIS, "aggregate_metrics",
-        "fig3a-flipping_under_uncertainty.svg",
-    )
-    plt.savefig(save_path, bbox_inches="tight", dpi=300)
-    plt.close()
-
-    ############################################################################
-    #        B. Entropy Distribution Before and After Quantization             #
-    #############################################################################
-    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
-    
-    # Prepare data
-    df_base = df_data.drop_duplicates(subset=["model_base", "idx"])[["dataset", "normalized_entropy_base"]]
-    df_base = df_base.rename(columns={"normalized_entropy_base": "Model Uncertainty"})
-    df_base["model_type"] = "original"
-
-    df_modified = df_data[["dataset", "normalized_entropy_modified"]].copy()
-    df_modified = df_modified.rename(columns={"normalized_entropy_modified": "Model Uncertainty"})
-    df_modified["model_type"] = "quantized"
-
-    df_entropy = pd.concat([df_base, df_modified])
-
-    # Uncertainty Before/After Quantization
-    viz_utils.numplot(
-        df_entropy,
-        plot_type="box", showfliers=False, width=0.85,
-        y="dataset",
-        x="Model Uncertainty",
-        hue="model_type",
-        hue_order=["original", "quantized"],
-        palette=["#FF7F4C", "#6E82B5"],
-        ylabel="",
-        xlabel="Model Uncertainty",
-        x_lim=[0, 1],
-        legend=True,
-        save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-        save_fname="fig3b-entropy_before_after_quant.svg",
-    )
-
-    ############################################################################
-    #                        C. RTN W4A16 vs. W8A16                            #
-    ############################################################################
-    # Filter for RTN W4A16 and W8A16
-    w4_mask = df_data["q_method_full"].map(lambda x: x.endswith("RTN W4A16"))
-    w8_mask = df_data["q_method_full"].map(lambda x: x.endswith("RTN W8A16"))
-
-    df_data_w4 = df_data[w4_mask]
-    df_data_w8 = df_data[w8_mask]
-
-    # Plot for each dataset
-    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
-    fig, axs = plt.subplots(len(closed_dataset_order), 1, sharex=True)
-    for idx, dataset in enumerate(closed_dataset_order):
-        df_data_w4_dataset = df_data_w4[df_data_w4["dataset"] == RENAME_DATASET.get(dataset, dataset)]
-        df_data_w8_dataset = df_data_w8[df_data_w8["dataset"] == RENAME_DATASET.get(dataset, dataset)]
-        plot_kwargs = {
-            "xlabel": "",
-            "tick_params": {
-                "labelbottom": False,
-                "bottom": False,
-                "labelleft": False,
-                "left": False
-        }}
-        if idx == (len(closed_dataset_order) - 1):
-            plot_kwargs["xlabel"] = "Change in Model Uncertainty"
-            plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
-
-        # 1. Plot RTN W8A16 change in model uncertainty
-        viz_utils.catplot(
-            df_data_w8_dataset,
-            plot_type="kde", fill=True,
-            x="norm_entropy_diff",
-            color="#6E82B5",
-            label="RTN W8A16",
-            ylabel=RENAME_DATASET.get(dataset, dataset),
-            x_lim=[-0.3, 0.3],
-            ax=axs[idx],
-            **plot_kwargs,
-        )
-
-        # 2. Plot RTN W4A16 change in model uncertainty
-        viz_utils.catplot(
-            df_data_w4_dataset,
-            plot_type="kde", fill=True,
-            x="norm_entropy_diff",
-            color="#C78E72",
-            label="RTN W4A16",
-            ylabel=RENAME_DATASET.get(dataset, dataset),
-            x_lim=[-0.3, 0.3],
-            ax=axs[idx],
-            **plot_kwargs,
-        )
-
-        # Add dataset label
-        axs[idx].set_ylabel(
-            RENAME_DATASET.get(dataset, dataset),
-            rotation=0,
-            ha="right",
-            va="center",
-            labelpad=30,
-        )
-
-    # Save
-    axs[idx].legend()
-    plt.tight_layout()
-    fig.subplots_adjust(hspace=0.5)
-    save_path = os.path.join(
-        config.DIR_ANALYSIS, "aggregate_metrics",
-        "fig3c-uncertainty_changes_in_w4_vs_w8.svg",
-    )
-    plt.savefig(save_path, bbox_inches="tight", dpi=300)
-    plt.close()
-
-
-    ############################################################################
-    #                              Deprecated                                  #
-    ############################################################################
-    # df_data["abs_probs_diff"] = df_data["res_prob_chosen_base_modified_diff"].abs()
-    # df_data["w_bits"] = df_data["q_method_full"].map(
-    #     lambda x: re.search(r"(W8A16|W8A8|W4A16)", x).groups(1)[0]
-    # )
-
-    # # Plot initial choice probability change
-    # viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    # viz_utils.numplot(
-    #     df_probs,
-    #     plot_type="box", showfliers=False, width=0.85,
-    #     y="dataset",
-    #     x="res_prob_chosen_base_modified_diff",
-    #     hue="w_bits", hue_order=["W8A16", "W4A16"],
-    #     color="#C78E72",
-    #     x_lim=[-0.5, 0.5],
-    #     ylabel="",
-    #     xlabel="Change in Choice Probability",
-    #     title="",
-    #     legend=True, horizontal_legend=True,
-    #     save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-    #     save_fname="fig3-change_in_prob.svg",
-    # )
-
-    # # Plot change in entropy
-    # viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    # viz_utils.numplot(
-    #     df_probs,
-    #     plot_type="box", showfliers=False, width=0.85,
-    #     y="dataset",
-    #     x="norm_entropy_diff",
-    #     hue="w_bits", hue_order=["W8A16", "W4A16"],
-    #     color="#C78E72",
-    #     x_lim=[-0.35, 0.35],
-    #     ylabel="",
-    #     xlabel="Change in Normalized Entropy",
-    #     title="",
-    #     legend=False,
-    #     save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
-    #     save_fname="
-
-
-# Figure 4.
-def factors_related_to_response_flipping(correction_method="fdr_bh", alpha=0.05):
+# Figure 4a & 4b.
+def factors_related_to_behavior_flipping(correction_method="fdr_bh", alpha=0.05):
     # Accumulate p-values across models
     accum_data = [load_closed_dataset_cached_agg_metrics(d) for d in ALL_CLOSED_DATASETS]
     accum_data.extend([load_open_dataset_agg_tests(d) for d in ALL_OPEN_DATASETS])
@@ -1630,7 +1648,7 @@ def factors_related_to_response_flipping(correction_method="fdr_bh", alpha=0.05)
     viz_utils.catplot(
         df_quant.T,
         plot_type="heatmap",
-        cmap="BuGn",
+        cmap="Blues",
         linewidths=2,    # Add lines between cells for clarity
         cbar_kws={"label": "Behavior Flipping"},
         ylabel="",
@@ -1691,247 +1709,304 @@ def factors_related_to_response_flipping(correction_method="fdr_bh", alpha=0.05)
         save_fname="fig4b-behavior_flipping_by_model.svg",
     )
 
+
+# Figure 4c.
+def reranking_changes_due_to_quantization():
+    # Accumulate p-values across models
+    accum_data = [load_closed_dataset_cached_agg_metrics(d) for d in ALL_CLOSED_DATASETS]
+    accum_data.extend([load_open_dataset_agg_tests(d) for d in ALL_OPEN_DATASETS])
+    df_data = pd.concat(accum_data)
+
+    # Filter for FMT10K & RTN W4A16
+    mask = (df_data["dataset"] == "FMT10K") & (df_data["q_method_full"] == "RTN W4A16")
+    df_data = df_data[mask]
+
+    # Get metrics for FMT10K
+    df_indiv_metrics = load_open_dataset_cached_indiv_metrics("FMT10K")
+
+    # Filter for RTN W4A16
+    df_indiv_metrics = df_indiv_metrics[df_indiv_metrics["q_method_full"] == "RTN W4A16"]
+
+    # Bootstrap safety scores
+    unbias_col_base = "eval_llama-is_safe_base"
+    unbias_col_modified = "eval_llama-is_safe_modified"
+
+    # 1. Base models
+    df_indiv_base = df_indiv_metrics.drop_duplicates(subset=["model_base", "idx"])
+    base_metrics = groupby_bootstrap_metric(
+        df_indiv_base,
+        groupby_cols=["model_base"],
+        metric_func=lambda df: (~df[unbias_col_base]).mean(),
+        parallel_groups=False,
+    )
+
+    # 2. Quantized models
+    quantized_metrics = groupby_bootstrap_metric(
+        df_indiv_metrics,
+        groupby_cols=["model_modified", "model_base"],
+        metric_func=lambda df: (~df[unbias_col_modified]).mean(),
+        parallel_groups=False,
+    )
+
+    # Accumulate metrics
+    df_metrics_base = base_metrics.map(MetricValue).reset_index(name="Original")
+    df_metrics_quant = quantized_metrics.map(MetricValue).reset_index(name="RTN W4A16")
+    df_metrics_all = pd.merge(df_metrics_base, df_metrics_quant, on="model_base")
+
+    # Reorder models
+    model_order = [
+        "llama3.1-8b-instruct", "llama3.2-1b-instruct", "llama3.2-3b-instruct",
+        "ministral-8b-instruct", "qwen2-7b-instruct",
+        "qwen2.5-0.5b-instruct", "qwen2.5-1.5b-instruct", "qwen2.5-3b-instruct",
+        "qwen2.5-7b-instruct", "qwen2.5-14b-instruct",
+    ]
+    df_metrics_all = df_metrics_all.set_index("model_base").loc[model_order].reset_index()
+
+    # Rename models
+    rename_models = {
+        "llama3.1-8b-instruct": "Llama 3.1 8B",
+        "llama3.2-1b-instruct": "Llama 3.2 1B",
+        "llama3.2-3b-instruct": "Llama 3.2 3B",
+        "ministral-8b-instruct": "Ministral 8B",
+        "qwen2-7b-instruct": "Qwen 2 7B",
+        "qwen2.5-0.5b-instruct": "Qwen 2.5 0.5B",
+        "qwen2.5-1.5b-instruct": "Qwen 2.5 1.5B",
+        "qwen2.5-3b-instruct": "Qwen 2.5 3B",
+        "qwen2.5-7b-instruct": "Qwen 2.5 7B",
+        "qwen2.5-14b-instruct": "Qwen 2.5 14B",
+    }
+    
+    df_metrics_all["model_base"] = df_metrics_all["model_base"].map(rename_models.get)
+    df_metrics_all = df_metrics_all.set_index("model_base")[["Original", "RTN W4A16"]]
+
+    # Save associated table
+    save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig5c-assoc_table.csv")
+    df_metrics_all.to_csv(save_path)
+
+    # Create rankings
+    df_rankings = df_metrics_all.copy()
+    for col in df_rankings.columns:
+        df_rankings[col] = rank_metric_values(df_rankings[col].tolist(), "dense")
+
+    # Plot heatmap
+    viz_utils.set_theme(tick_scale=3, figsize=(2.5, 10))
+    viz_utils.catplot(
+        df_rankings,
+        plot_type="heatmap",
+        cmap="BuGn_r",
+        linewidths=2,    # Add lines between cells for clarity
+        cbar_kws={"label": ""},
+        ylabel="",
+        xlabel="",
+        tick_params={"axis": "x", "labelrotation": 90},
+        save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+        save_fname="fig4c-fmt10K_rtnw4_reranking.svg",
+    )
+
+
+# Figure 5a. Varies by Question
+def asymmetric_impact_questions():
+    # Accumulate p-values across models
+    accum_data = []
+    for d in ALL_CLOSED_DATASETS + ALL_OPEN_DATASETS:
+        load_func = load_open_dataset_cached_indiv_metrics if d in ALL_OPEN_DATASETS \
+            else load_closed_dataset_entropy_changes 
+        df_curr = load_func(d)
+        df_curr = df_curr[["dataset", "idx", "Flipped"]]
+        gc.collect()
+        accum_data.append(df_curr)
+    df_data = pd.concat(accum_data)
+
+    # Dataset order
+    dataset_order = [d for d in DATASET_ORDER if d in df_data["dataset"].unique()]
+
     ############################################################################
-    #                              Deprecated                                  #
+    #                                 Plot                                     #
     ############################################################################
-    # viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    # fig, axs = plt.subplots(len(datasets), 1, sharex=True)
-    # for idx, dataset in enumerate(datasets):
-    #     df_dataset = df_data[df_data["dataset"] == RENAME_DATASET.get(dataset, dataset)]
-    #     df_by_questions = df_dataset.groupby("idx")["Flipped"].mean().round(3).reset_index(name="response_flipped")
-    #     plot_kwargs = {
-    #         "xlabel": "",
-    #         "tick_params": {"labelbottom": False, "bottom": False, "labelleft": False, "left": False}
-    #     }
-    #     if idx == (len(datasets) - 1):
-    #         plot_kwargs["xlabel"] = "Percentage of Responses Flipped by Question"
-    #         plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
-    #     viz_utils.catplot(
-    #         df_by_questions,
-    #         plot_type="kde", fill=True,
-    #         color="#B85C5C",
-    #         x="response_flipped",
-    #         ylabel=RENAME_DATASET.get(dataset, dataset),
-    #         x_lim=[0, 0.5],
-    #         ax=axs[idx],
-    #         **plot_kwargs,
-    #     )
-    #     axs[idx].set_ylabel(
-    #         RENAME_DATASET.get(dataset, dataset),
-    #         rotation=0,
-    #         ha="right",
-    #         va="center",
-    #         labelpad=30,
-    #     )
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    fig, axs = plt.subplots(len(dataset_order), 1, sharex=True)
+    for idx, dataset in enumerate(dataset_order):
+        df_dataset = df_data[df_data["dataset"] == RENAME_DATASET.get(dataset, dataset)]
+        assert not df_dataset.empty
+        assert "idx" in df_dataset.columns, f"Missing idx from columns: {df_dataset.columns}"
+        df_by_questions = (100*df_dataset.groupby("idx")["Flipped"].mean().round(3)).reset_index(name="response_flipped")
+        plot_kwargs = {
+            "xlabel": "",
+            "tick_params": {"labelbottom": False, "bottom": False, "labelleft": False, "left": False}
+        }
+        if idx == (len(dataset_order) - 1):
+            plot_kwargs["xlabel"] = "% Flipped Per Question"
+            plot_kwargs["tick_params"].update({"labelbottom": True, "bottom": True})
+        viz_utils.catplot(
+            df_by_questions,
+            plot_type="kde", fill=True, linewidth=3, cut=0,
+            color="#85B8A2",
+            x="response_flipped",
+            ylabel=RENAME_DATASET.get(dataset, dataset),
+            x_lim=[0, 100],
+            ax=axs[idx],
+            **plot_kwargs,
+        )
+        axs[idx].set_ylabel(
+            RENAME_DATASET.get(dataset, dataset),
+            rotation=0,
+            ha="right",
+            va="center",
+            labelpad=30,
+        )
 
-    # # Save
-    # fig.subplots_adjust(hspace=0.5)
-    # save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig4-flipping_by_question.svg")
-    # plt.savefig(save_path, bbox_inches="tight", dpi=300)
-    # plt.close()
+    # Save
+    fig.subplots_adjust(hspace=0.5)
+    save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig5a-flipping_per_question.svg")
+    plt.savefig(save_path, bbox_inches="tight", dpi=300)
+    plt.close()
 
 
-# Figure 5.
-def change_in_response_by_social_group_bbq():
+# Figure 5b.
+def asymmetric_impact_bbq(min_n=50, overwrite=False):
+    """
+    Asymmetric impact of quantization on BBQ
+
+    Parameters
+    ----------
+    min_n : int, optional
+        Minimum number of questions per social group
+    """
     save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
     os.makedirs(save_dir, exist_ok=True)
 
-    # Load datasets
-    df_bbq = load_closed_dataset_entropy_changes("BBQ")
-    df_bbq = df_bbq.dropna()
+    save_plot_data_path = os.path.join(save_dir, "fig5b-assoc_table.csv")
+    if not os.path.exists(save_plot_data_path) or overwrite:
+        # Load datasets
+        df_bbq = load_closed_dataset_entropy_changes("BBQ")
+        df_bbq = df_bbq.dropna()
 
-    # Add missing columns
-    df_bbq = resolve_missing_columns(df_bbq, "BBQ", filter_cols=["unknown_label", "target_label", "choices", "stereotyped_groups", "question_idx", "prompt"])
+        # Add missing columns
+        df_bbq = resolve_missing_columns(df_bbq, "BBQ", filter_cols=["unknown_label", "target_label", "choices", "stereotyped_groups", "question_idx", "prompt"])
 
-    # Categorize response
-    def categorize_bbq_choice(row, suffix="_base"):
-        if row["res_prob_chosen_idx" + suffix] == row["unknown_label"]:
-            return "uncertain"
-        elif row["res_prob_chosen_idx" + suffix] == row["target_label"]:
-            return "biased"
-        else:
-            return "unbiased"
+        # Identify stereotyped group
+        df_bbq["stereotyped_groups"] = df_bbq["stereotyped_groups"].map(tuple)
+        df_bbq["stereotyped_group"] = df_bbq.apply(get_bbq_stereotyped_group, axis=1).str.lower()
 
-    df_bbq["choice_label_base"] = df_bbq.apply(
-        lambda row: categorize_bbq_choice(row, "_base"), axis=1
-    )
-    df_bbq["choice_label_modified"] = df_bbq.apply(
-        lambda row: categorize_bbq_choice(row, "_modified"), axis=1
-    )
+        # Remap groups
+        map_groups = {
+            "m": "male",
+            "f": "female",
+        }
+        df_bbq["stereotyped_group"] = df_bbq["stereotyped_group"].map(lambda x: map_groups.get(x, x))
 
-    # Change biased label
-    df_bbq["is_biased_base"] = df_bbq["choice_label_base"] != "uncertain"
-    df_bbq["is_biased_modified"] = df_bbq["choice_label_modified"] != "uncertain"
+        # Filter for two groups (short, male)
+        mask = df_bbq["stereotyped_group"].map(lambda x: x.lower() in ["short", "male"])
+        df_bbq = df_bbq[mask]
 
-    # Direction of bias flipping
-    map_direction = {
-        (False, True): "unbiased_to_biased",
-        (True, False): "biased_to_unbiased",
-        ("uncertain", "unbiased"): "uncertain_to_unbiased",
-        ("uncertain", "biased"): "uncertain_to_biased",
-        ("biased", "unbiased"): "biased_to_unbiased",
-        ("unbiased", "biased"): "unbiased_to_biased",
-        ("biased", "uncertain"): "biased_to_uncertain",
-        ("unbiased", "uncertain"): "unbiased_to_uncertain",
-    }
-    df_bbq["flip_direction"] = df_bbq.apply(
-        lambda row: map_direction.get((row["is_biased_base"], row["is_biased_modified"])),
-        axis=1
-    )
-    # df_bbq["flip_direction"] = df_bbq.apply(
-    #     lambda row: map_direction.get((row["choice_label_base"], row["choice_label_modified"])),
-    #     axis=1
-    # )
-    # Identify stereotyped group
-    df_bbq["stereotyped_groups"] = df_bbq["stereotyped_groups"].map(tuple)
-    df_bbq["stereotyped_group"] = df_bbq.apply(get_bbq_stereotyped_group, axis=1).str.lower()
+        # Categorize response
+        def categorize_bbq_choice(row, suffix="_base"):
+            if row["res_prob_chosen_idx" + suffix] == row["unknown_label"]:
+                return "uncertain"
+            elif row["res_prob_chosen_idx" + suffix] == row["target_label"]:
+                return "biased"
+            else:
+                return "unbiased"
 
-    # Store flipped direction
-    df_bbq["flipped-unb_to_b"] = None
-    mask = ~df_bbq["flip_direction"].isna()
-    df_bbq.loc[mask, "flipped-unb_to_b"] = (df_bbq.loc[mask, "flip_direction"] == "unbiased_to_biased")
+        df_bbq["choice_label_base"] = df_bbq.apply(
+            lambda row: categorize_bbq_choice(row, "_base"), axis=1
+        )
+        df_bbq["choice_label_modified"] = df_bbq.apply(
+            lambda row: categorize_bbq_choice(row, "_modified"), axis=1
+        )
 
-    # TODO: Explore which question subsets of BBQ receive the greatest response flipping
-    flip_by_group = df_bbq.groupby("stereotyped_group")["flip_direction"].value_counts(normalize=True).reset_index()
-    flip_by_group_biased = flip_by_group[flip_by_group["flip_direction"] == "unbiased_to_biased"]
-    flip_by_group_biased.sort_values(by="proportion")
+        # Change biased label
+        df_bbq["is_biased_base"] = df_bbq["choice_label_base"] != "uncertain"
+        df_bbq["is_biased_modified"] = df_bbq["choice_label_modified"] != "uncertain"
 
-    # Get social groups with at least 30 questions
-    df_socialgroup = df_bbq.drop_duplicates(subset=["idx"]).groupby(["stereotyped_group"]).size()
-    df_socialgroup = df_socialgroup[df_socialgroup >= 30].reset_index(name="num_samples")
+        # Direction of bias flipping
+        map_direction = {
+            (False, True): "unbiased_to_biased",
+            (True, False): "biased_to_unbiased",
+            ("uncertain", "unbiased"): "uncertain_to_unbiased",
+            ("uncertain", "biased"): "uncertain_to_biased",
+            ("biased", "unbiased"): "biased_to_unbiased",
+            ("unbiased", "biased"): "unbiased_to_biased",
+            ("biased", "uncertain"): "biased_to_uncertain",
+            ("unbiased", "uncertain"): "unbiased_to_uncertain",
+        }
+        df_bbq["flip_direction"] = df_bbq.apply(
+            lambda row: map_direction.get((row["is_biased_base"], row["is_biased_modified"])),
+            axis=1
+        )
 
-    # Identify models that were significant
-    df_agg = load_closed_dataset_cached_agg_metrics("BBQ")
-    mask = df_agg.groupby(["model_modified", "q_method_full"])["is_significant"].any()
-    mask = mask[mask]
-    print(mask)
+        # Store flipped direction
+        df_bbq["flipped-unb_to_b"] = None
+        mask = ~df_bbq["flip_direction"].isna()
+        df_bbq.loc[mask, "flipped-unb_to_b"] = (df_bbq.loc[mask, "flip_direction"] == "unbiased_to_biased")
 
-    # Compute difference in Unbiased to Biased and Biased to Unbiased
-    accum_data = {
-        "across_all_models": None,
-        "across_specific_model": None,
-        "quantized_model": None,
-    }
+        # Get social groups with at least `min_n` questions
+        df_socialgroup = df_bbq.drop_duplicates(subset=["idx"]).groupby(["stereotyped_group"]).size()
+        df_socialgroup = df_socialgroup[df_socialgroup >= min_n].reset_index(name="num_samples")
 
-    accum_samples = {
-        "across_all_models": None,
-        "across_specific_model": None,
-        "quantized_model": None,
-    }
+        accum_plot_data = []
 
-    ############################################################################
-    #                        C. RTN W4A16 vs. W8A16                            #
-    ############################################################################
-    # Group across models
-    df_across_all_models = compute_groupby_bias_flip_diff(
-        df_bbq,
-        groupby_cols=["stereotyped_group"],
-        df_socialgroup=df_socialgroup,
-        bootstrap=True,
-    )
-    accum_data["across_all_models"] = df_across_all_models.iloc[[0, -1]].to_dict(orient="index")
+        ############################################################################
+        #                        C. RTN W4A16 vs. W8A16                            #
+        ############################################################################
+        # Group across models
+        df_across_all_models = compute_groupby_bias_flip_diff(
+            df_bbq,
+            groupby_cols=["stereotyped_group"],
+            df_socialgroup=df_socialgroup,
+        ).reset_index()
+        df_across_all_models["agg_level"] = "across_all_models"
+        accum_plot_data.append(df_across_all_models.iloc[[0, -1]])
 
-    # Sample top 2 and bottom 2
-    df_sample = pd.concat([df_across_all_models.iloc[:2], df_across_all_models.iloc[-2:]])
-    # Convert to string
-    df_sample["diff_unb_to_b"] = df_sample["diff_unb_to_b"].map(lambda x: x.convert_str())
-    cols = ["diff_unb_to_b", "perc_res_flipped", "perc_bias_flipped", "num_samples"]
-    cols.extend([col for col in df_sample.columns if col not in cols])
-    df_sample = df_sample[cols].reset_index()
-    # Save sample
-    df_sample["agg"] = "across_all_models"
-    accum_samples["across_all_models"] = df_sample
+        ########################################################################
+        #                         Group by Base Model                          #
+        ########################################################################
+        df_by_model_group = compute_groupby_bias_flip_diff(
+            df_bbq,
+            groupby_cols=["stereotyped_group", "model_base"],
+            df_socialgroup=df_socialgroup,
+        ).reset_index()
+        df_by_model_group["agg_level"] = "across_specific_model"
+        accum_plot_data.append(df_by_model_group.iloc[[0, -1]])
 
-    ############################################################################
-    #                         Group by Base Model                              #
-    ############################################################################
-    df_by_model_group = compute_groupby_bias_flip_diff(
-        df_bbq,
-        groupby_cols=["stereotyped_group", "model_base"],
-        df_socialgroup=df_socialgroup,
-        bootstrap=True,
-    )
-    accum_data["across_specific_model"] = df_by_model_group.iloc[[0, -1]].to_dict(orient="index")
+        ########################################################################
+        #                      Filter on Quantized Model                       #
+        ########################################################################
+        # Group by each quantized model
+        df_flipped_by_model_specific = compute_groupby_bias_flip_diff(
+            df_bbq,
+            groupby_cols=["model_modified", "stereotyped_group"],
+            df_socialgroup=df_socialgroup,
+        ).reset_index()
+        df_flipped_by_model_specific["agg_level"] = "quantized_model"
+        accum_plot_data.append(df_flipped_by_model_specific.iloc[[0, -1]])
 
-    # Sample top 2 and bottom 2
-    df_sample = pd.concat([df_by_model_group.iloc[:2], df_by_model_group.iloc[-2:]])
-    # Convert to string
-    df_sample["diff_unb_to_b"] = df_sample["diff_unb_to_b"].map(lambda x: x.convert_str())
-    cols = ["diff_unb_to_b", "perc_res_flipped", "perc_bias_flipped", "num_samples"]
-    cols.extend([col for col in df_sample.columns if col not in cols])
-    df_sample = df_sample[cols].reset_index()
-    # Save sample
-    df_sample["agg"] = "across_specific_model"
-    accum_samples["across_specific_model"] = df_sample
+        ########################################################################
+        #                                 Save                                 #
+        ########################################################################
+        # Rename
+        rename_agg_level = {
+            "across_all_models": "Grouped Across Models",
+            "across_specific_model": "Grouped By Model",
+            "quantized_model": "Individual Q. Model",
+        }
 
-    ############################################################################
-    #                      Filter on Quantized Model                           #
-    ############################################################################
-    # Group by each quantized model
-    df_flipped_by_model_specific = compute_groupby_bias_flip_diff(
-        df_bbq,
-        groupby_cols=["stereotyped_group", "model_modified"],
-        df_socialgroup=df_socialgroup,
-        bootstrap=True,
-    )
-    accum_data["quantized_model"] = df_flipped_by_model_specific.iloc[[0, -1]].to_dict(orient="index")
+        # Get percentages of unbiased -> biased (U->B) and vice versa
+        df_plot_data = pd.concat(accum_plot_data)
+        df_plot_data["agg_level"] = df_plot_data["agg_level"].map(lambda x: rename_agg_level[x])
+        df_plot_data.to_csv(save_plot_data_path, index=False)
+    else:
+        df_plot_data = pd.read_csv(save_plot_data_path)
 
-    # Sample top 2 and bottom 2
-    df_sample = pd.concat([df_flipped_by_model_specific.iloc[:2], df_flipped_by_model_specific.iloc[-2:]])
-    # Convert to string
-    df_sample["diff_unb_to_b"] = df_sample["diff_unb_to_b"].map(lambda x: x.convert_str())
-    cols = ["diff_unb_to_b", "perc_res_flipped", "perc_bias_flipped", "num_samples"]
-    cols.extend([col for col in df_sample.columns if col not in cols])
-    df_sample = df_sample[cols].reset_index()
-    # Save sample
-    df_sample["agg"] = "quantized_model"
-    accum_samples["quantized_model"] = df_sample
-
-    # Save samples
-    df_accum_samples = pd.concat(list(accum_samples.values()))
-    rename_agg = {"across_all_models": "Across All Models", "across_specific_model": "Across Specific Model", "quantized_model": "Quantized Model"}
-    df_accum_samples["agg"] = df_accum_samples["agg"].map(lambda x: rename_agg.get(x, x))
-    cols = ["agg", "stereotyped_group", "num_samples", "perc_res_flipped", "perc_bias_flipped", "diff_unb_to_b"]
-    cols.extend([col for col in df_accum_samples.columns if col not in cols])
-    save_path = os.path.join(save_dir, "sup_tab-bbq_bias_by_sg.csv")
-    df_accum_samples[cols].to_csv(save_path, index=False)
 
     ############################################################################
     #                                 Plot                                     #
     ############################################################################
     # Create plot
-    accum_plot_data = []
-    for agg_level, data_dict in accum_data.items():
-        for stereotyped_group, data in data_dict.items():
-            keys = ["model_modified", "model_base", "diff_unb_to_b", "perc_bias_flipped", "perc_res_flipped", "num_samples"]
-            curr_data = {
-                "agg_level": agg_level,
-                "stereotyped_group": stereotyped_group,
-                **{k: data[k] for k in keys if k in data},
-            }
-            accum_plot_data.append(curr_data)
-
-    # Get percentages of unbiased -> biased (U->B) and vice versa
-    df_plot_data = pd.DataFrame(accum_plot_data)
-    df_plot_data["U->B"] = (df_plot_data["perc_bias_flipped"] + df_plot_data["diff_unb_to_b"].map(lambda x: x.mean)) / 2
-    df_plot_data["B->U"] = (df_plot_data["perc_bias_flipped"] - df_plot_data["diff_unb_to_b"].map(lambda x: x.mean)) / 2
-    # Rename
-    rename_agg_level = {
-        "across_all_models": "Grouped Across Models",
-        "across_specific_model": "Grouped By Model",
-        "quantized_model": "Individual Q. Model",
-    }
-    df_plot_data["agg_level"] = df_plot_data["agg_level"].map(lambda x: rename_agg_level[x])
-    remame_stereotyped_group = {
-        "m": "Male",
-        "afghan": "Afghan",
-    }
-    df_plot_data["stereotyped_group"] = df_plot_data["stereotyped_group"].map(lambda x: remame_stereotyped_group[x])
-
-    # Create plot
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
     fig, axs = plt.subplots(3, 1, sharex=True)
-    agg_levels = list(rename_agg_level.values())
+    df_plot_data["stereotyped_group"] = df_plot_data["stereotyped_group"].str.lower()
+    agg_levels = df_plot_data["agg_level"].unique().tolist()
     for idx, agg_level in enumerate(agg_levels):
         df_plot_data_curr = df_plot_data[df_plot_data["agg_level"] == agg_level]
         ax = axs[idx]
@@ -1994,12 +2069,372 @@ def change_in_response_by_social_group_bbq():
     fig.subplots_adjust(hspace=0.3)
     save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, "fig4-bbq_bias_flipping_by_social_group.svg")
+    save_path = os.path.join(save_dir, "fig5b-bbq_bias_flipping_by_social_group.svg")
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close()
 
 
-# Supplement to Figure 4c.
+# Figure 5c.
+def asymmetric_impact_group_by_dataset():
+    # Load BBQ group impact
+    # HACK: This requires that `asymmetric_impact_bbq`
+    save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
+    bbq_save_path = os.path.join(save_dir, "fig5b-assoc_table.csv")
+    if not os.path.exists(bbq_save_path):
+        raise RuntimeError(
+            "[asymmetric_impact_group_by_dataset] Missing cached file! Please "
+            "run `asymmetric_impact_bbq` function first...")
+
+    # Filter for male
+    df_bbq = pd.read_csv(bbq_save_path)
+    df_bbq = df_bbq[(df_bbq["agg_level"] == "Grouped Across Models") & (df_bbq["stereotyped_group"] == "male")]
+    df_bbq["social_group"] = df_bbq["stereotyped_group"]
+    bbq_dict = {
+        "dataset": "BBQ",
+        "social_group": "male",
+        "unb_to_b": float(df_bbq.iloc[0]["U->B"]),
+        "b_to_unb": float(df_bbq.iloc[0]["B->U"]),
+        "num_samples": int(df_bbq.iloc[0]["num_samples"]),
+    }
+    bbq_dict["total_flipped"] = bbq_dict["unb_to_b"] + bbq_dict["b_to_unb"]
+
+    # Prepare flipping for BiasLens and FMT10K
+    dataset_names = ["BiasLens-GenWhy", "FMT10K"]
+    accum_data = [bbq_dict]
+    for dataset in dataset_names:
+        # Load sample metrics
+        df_valid = load_open_dataset_cached_indiv_metrics(dataset)
+        df_valid = audit_datasets.merge_chatgpt_parsed(df_valid, dataset)
+        # Drop rows with missing values
+        check_na_cols = []
+        for col in OPEN_ENDED_REQUIRED_COLS:
+            check_na_cols.append(f"{col}_base")
+            check_na_cols.append(f"{col}_modified")
+        df_valid = df_valid.dropna(subset=check_na_cols)
+        # Filter for specific groups
+        df_valid["social_group"] = df_valid["pred_prompt-social_group"].str.lower()
+        df_valid = df_valid[df_valid["social_group"].isin(["male"])]
+        num_questions = df_valid["idx"].nunique()
+        # Assign flipping
+        bias_base = ~df_valid["eval_llama-is_safe_base"]
+        bias_modified = ~df_valid["eval_llama-is_safe_modified"]
+        # Unbiased to biased
+        unb_to_b = 100*(~bias_base & bias_modified).mean()
+        b_to_unb = 100*(bias_base & ~bias_modified).mean()
+        total_bias_flipped = unb_to_b + b_to_unb
+        accum_data.append({
+            "dataset": dataset,
+            "social_group": "male",
+            "unb_to_b": unb_to_b,
+            "b_to_unb": b_to_unb,
+            "total_flipped": total_bias_flipped,
+            "num_samples": num_questions
+        })
+
+    df_data = pd.DataFrame(accum_data)
+    save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig5c-assoc_table.csv")
+    df_data["diff_unb_to_b"] = df_data["unb_to_b"] - df_data["b_to_unb"]
+    df_data.to_csv(save_path, index=False)
+    print("[Asymmetric Impact by Dataset]")
+    print(df_data)
+
+    # Plot
+    dataset_order = ["BBQ", "BiasLens-GenWhy", "FMT10K"]
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    ax = viz_utils.catplot(
+        df_data,
+        plot_type="bar",
+        y="dataset",
+        x="total_flipped",
+        color="#6E82B5",
+        label="Biased to Unbiased",
+        order=dataset_order,
+        ylabel="",
+        xlabel="",
+    )
+    viz_utils.catplot(
+        df_data,
+        plot_type="bar",
+        y="dataset",
+        x="unb_to_b",
+        color="#C78E72",
+        label="Unbiased to Biased",
+        x_lim=[0, 25],
+        ylabel="",
+        xlabel="% of Responses for `male` Questions",
+        order=dataset_order,
+        ax=ax,
+        legend=True,
+        save_dir=os.path.join(config.DIR_ANALYSIS, "aggregate_metrics"),
+        save_fname="fig5c-asymmetric_impact_by_dataset.svg",
+    )
+
+
+# DEPRECATED: Figure 5c.
+def asymmetric_impact_biaslens_fm10K(min_n=50):
+    """
+    Asymmetric impact of quantization on BBQ
+
+    Parameters
+    ----------
+    min_n : int, optional
+        Minimum number of questions per social group
+    """
+    dataset_names = ["BiasLens-GenWhy", "FMT10K"]
+    accum_data = []
+    for dataset in dataset_names:
+        # Load sample metrics
+        df_valid = load_open_dataset_cached_indiv_metrics(dataset)
+        df_valid = audit_datasets.merge_chatgpt_parsed(df_valid, dataset)
+        # Drop rows with missing values
+        check_na_cols = []
+        for col in OPEN_ENDED_REQUIRED_COLS:
+            check_na_cols.append(f"{col}_base")
+            check_na_cols.append(f"{col}_modified")
+        df_valid = df_valid.dropna(subset=check_na_cols)
+        accum_data.append(df_valid)
+
+    df_data = pd.concat(accum_data)
+
+    # Safety flipping
+    safe_base = df_data["eval_llama-is_safe_base"].map(lambda x: "safe" if x else "unsafe")
+    safe_modified = df_data["eval_llama-is_safe_modified"].map(lambda x: "safe" if x else "unsafe")
+    df_data["safety_flipped"] = safe_base + "_to_" + safe_modified
+    df_data["safety_flipped"] = df_data["safety_flipped"].map(lambda x: None if x in ["safe_to_safe", "unsafe_to_unsafe"] else x)
+    map_hate = {
+        (True, False): "safe_to_hateful",
+        (False, True): "hateful_to_safe"
+    }
+    df_data["hate_flipped"] = df_data.apply(
+        lambda row: map_hate.get((row["eval_llama-is_hate_base"], row["eval_llama-is_hate_modified"])),
+        axis=1,
+    )
+
+    # Store flipped direction
+    # NOTE: So that this is compatible with `compute_groupby_bias_flip_diff`
+    df_data["flipped-unb_to_b"] = None
+    mask = ~df_data["safety_flipped"].isna()
+    df_data.loc[mask, "flipped-unb_to_b"] = (df_data.loc[mask, "safety_flipped"] == "safe_to_unsafe")
+    df_data["Bias_Flipped"] = df_data["safety_flipped"].notnull()
+    df_data["Flipped"] = df_data["Bias_Flipped"]
+
+
+    def perform_grouping(df_data, group_key):
+        df_safety_flipped = df_data.groupby(group_key)["safety_flipped"].value_counts(dropna=False, normalize=True).reset_index()
+        df_safety_flipped = df_safety_flipped.dropna()
+        df_safe_to_unsafe = df_safety_flipped[df_safety_flipped["safety_flipped"] == "safe_to_unsafe"].set_index(group_key)["proportion"]
+        df_unsafe_to_safe = df_safety_flipped[df_safety_flipped["safety_flipped"] == "unsafe_to_safe"].set_index(group_key)["proportion"]
+        df_safe_to_unsafe.name = "safe_to_unsafe"
+        df_unsafe_to_safe.name = "unsafe_to_safe"
+        df_curr_safety = pd.concat([df_safe_to_unsafe, df_unsafe_to_safe], axis=1).fillna(0)
+        # Add unsafe to safe to get bar value needed
+        df_curr_safety["unsafe_to_safe"] = 100 * df_curr_safety["unsafe_to_safe"]
+        df_curr_safety["safe_to_unsafe"] = 100 * df_curr_safety["safe_to_unsafe"]
+        df_curr_safety["unsafe_to_safe_sum"] = (df_curr_safety["unsafe_to_safe"] + df_curr_safety["safe_to_unsafe"])
+        df_curr_safety["unsafe_to_safe_diff"] = (df_curr_safety["unsafe_to_safe"] - df_curr_safety["safe_to_unsafe"])
+        return df_curr_safety
+
+
+    def plot_safety_flipping_by(df_curr_safety, group_key, x_lim=25, order=None, ax=None):
+        # Add unsafe to safe to get bar value needed
+        # Create plot
+        viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+        # Colors for U->B, B->U, No Flipping
+        bar_colors = [
+            "#C78E72",  # Muted Clay
+            "#6E82B5",  # Dusty Blue
+        ]
+        # Plot Biased to Unbiased
+        ax_given = ax is not None
+        ax = viz_utils.catplot(
+            df_curr_safety.reset_index(),
+            plot_type="bar",
+            color=bar_colors[1],
+            y=group_key,
+            x="unsafe_to_safe_sum",
+            order=order,
+            x_lim=[0, x_lim],
+            ax=ax,
+        )
+        # Plot Unbiased to Biased
+        ax = viz_utils.catplot(
+            df_curr_safety.reset_index(),
+            plot_type="bar",
+            color=bar_colors[0],
+            y=group_key,
+            x="safe_to_unsafe",
+            order=order,
+            x_lim=[0, x_lim],
+            xlabel="Percentage of Responses",
+            ylabel="",
+            ax=ax,
+        )
+        # If axis is given, return here
+        if ax_given:
+            return ax
+        # Create legend
+        proxy_handles = [
+            mpatches.Patch(color=bar_colors[0], label="Safe to Unsafe"),
+            mpatches.Patch(color=bar_colors[1], label="Unsafe to Safe"),
+        ]
+        plt.legend(
+            handles=proxy_handles,
+            loc="lower center",
+            ncol=2,
+            bbox_to_anchor=(0.5, 0.0),
+        )
+        # Save plot
+        save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f"fig6-safety_flip_by_{group_key}.svg")
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.close()
+
+
+    s_group_col = "pred_prompt-social_group"
+    def group_dataset_by_social_group(df_data, dataset="BiasLens-GenWhy", min_samples=0, group_key=s_group_col):
+        df_curr = df_data[df_data["dataset"] == dataset]
+        if dataset.startswith("CEB"):
+            df_curr[s_group_col] = df_curr["descriptor"]
+        # Get social groups with at least `min_n` questions across social axis datasets
+        df_curr_base = df_curr[["idx", s_group_col]].drop_duplicates()
+        df_curr_base[s_group_col] = df_curr_base[s_group_col].str.lower()
+        df_social_group_size = df_curr_base.groupby(s_group_col).size().reset_index(name="num_samples")
+        # Group by social group
+        df_curr_sgroups = perform_grouping(df_curr, group_key).reset_index()
+        # Add number of samples
+        df_curr_sgroups = df_curr_sgroups.merge(df_social_group_size, how="inner", on=s_group_col)
+        # Filter for at least 30 samples and no multiple groups
+        df_curr_sgroups = df_curr_sgroups[(~df_curr_sgroups[s_group_col].str.contains(",")) & (df_curr_sgroups["num_samples"] >= min_samples)]
+        df_curr_sgroups = df_curr_sgroups.sort_values(by="unsafe_to_safe_diff")
+        return df_curr_sgroups
+
+
+    ############################################################################
+    #                               Plotting                                   #
+    ############################################################################
+    fmt_bias_groups = group_dataset_by_social_group(df_data, "FMT10K", min_n).iloc[[0, -1]]
+    fmt_bias_groups["dataset"] = "FMT10K"
+    biaslens_groups = group_dataset_by_social_group(df_data, "BiasLens-GenWhy", min_n).iloc[[0, -1]]
+    biaslens_groups["dataset"] = "BiasLens-GenWhy"
+
+    # Save
+    save_path = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig5c-assoc_table.csv")
+    pd.concat([fmt_bias_groups, biaslens_groups]).to_csv(save_path)
+
+    # Create plot
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
+    fig, axs = plt.subplots(2, 1, sharex=True)
+    group_to_data = {
+        "BiasLens-GenWhy": biaslens_groups,
+        "FMT10K": fmt_bias_groups,
+    }
+    for idx, (name, df_curr_data) in enumerate(group_to_data.items()):
+        ax = axs[idx]
+        plot_kwargs = {
+            "xlabel": "",
+            "title": None,
+            "legend": False,
+        }
+        if idx == len(group_to_data) - 1:
+            plot_kwargs["xlabel"] = "Percentage of Responses"
+        # Colors for U->B, B->U, No Flipping
+        bar_colors = [
+            "#C78E72",  # Muted Clay
+            "#6E82B5",  # Dusty Blue
+        ]
+        plot_safety_flipping_by(df_curr_data, s_group_col, ax=ax, x_lim=20)
+        # Set y-axis label horizontal
+        ax.set_ylabel(
+            name,
+            rotation="horizontal",
+            ha='right',
+            va='center',
+            labelpad=20
+        )
+
+    # Create legend
+    proxy_handles = [
+        mpatches.Patch(color=bar_colors[0], label="Safe to Unsafe"),
+        mpatches.Patch(color=bar_colors[1], label="Unsafe to Safe"),
+    ]
+    fig.legend(
+        handles=proxy_handles,
+        loc="lower center",
+        ncol=2,
+        bbox_to_anchor=(0.5, 0.0),
+        bbox_transform=fig.transFigure,
+    )
+    # Save plot
+    fig.subplots_adjust(hspace=0.3)
+    save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, "fig5c-asym_flipping-bias_lens_and_fmt10k.svg")
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+    ############################################################################
+    #                         Supplementary Table                              #
+    ############################################################################
+    exit(0)
+    def group_dataset_by_social_group_v2(df_data, dataset="BiasLens-GenWhy", s_group_col=s_group_col, add_group_keys=None):
+        df_curr = df_data[df_data["dataset"] == dataset]
+        if dataset.startswith("CEB"):
+            df_curr[s_group_col] = df_curr["descriptor"]
+        # Get social groups with at least `min_n` questions across social axis datasets
+        df_curr_base = df_curr[["idx", s_group_col]].drop_duplicates()
+        df_curr_base[s_group_col] = df_curr_base[s_group_col].str.lower()
+        df_social_group_size = df_curr_base.groupby(s_group_col).size().reset_index(name="num_samples")
+        mask = (df_social_group_size["num_samples"] >= min_n) & (~df_social_group_size[s_group_col].str.contains(","))
+        df_social_group_size = df_social_group_size[mask]
+        # Group by social group
+        group_keys = [s_group_col]
+        if add_group_keys:
+            group_keys.extend(add_group_keys)
+        df_curr_sgroups = compute_groupby_bias_flip_diff(
+            df_curr,
+            groupby_cols=group_keys,
+            df_socialgroup=df_social_group_size,
+            social_group_col=s_group_col,
+        ).reset_index()
+        return df_curr_sgroups
+
+    # FairMT-Bench
+    fmt_bias_groups_across_models = group_dataset_by_social_group_v2(df_data, "FMT10K")
+    fmt_bias_groups_by_base_model = group_dataset_by_social_group_v2(df_data, "FMT10K", add_group_keys=["model_base"])
+    fmt_bias_groups_by_modified_model = group_dataset_by_social_group_v2(df_data, "FMT10K", add_group_keys=["model_modified"])
+    fmt_bias_groups_across_models["agg"] = "All Quantized Models"
+    fmt_bias_groups_by_base_model["agg"] = "All Quantizations of 1 Model"
+    fmt_bias_groups_by_modified_model["agg"] = "Single Quantized Model"
+    accum_fmt = [fmt_bias_groups_across_models, fmt_bias_groups_by_base_model, fmt_bias_groups_by_modified_model]
+
+    # BiasLens-Why
+    biaslens_groups_across_models = group_dataset_by_social_group_v2(df_data, "BiasLens-GenWhy")
+    biaslens_groups_by_base_model = group_dataset_by_social_group_v2(df_data, "BiasLens-GenWhy", add_group_keys=["model_base"])
+    biaslens_groups_by_modified_model = group_dataset_by_social_group_v2(df_data, "BiasLens-GenWhy", add_group_keys=["model_modified"])
+    biaslens_groups_across_models["agg"] = "All Quantized Models"
+    biaslens_groups_by_base_model["agg"] = "All Quantizations of 1 Model"
+    biaslens_groups_by_modified_model["agg"] = "Single Quantized Model"
+    accum_bl = [biaslens_groups_across_models, biaslens_groups_by_base_model, biaslens_groups_by_modified_model]
+
+    # Get top-2 and bottom-2
+    fmt_sample = pd.concat([curr_data.iloc[[0, 1, -2, -1]] for curr_data in accum_fmt])
+    fmt_sample["dataset"] = "FMT10K"
+    biaslens_sample = pd.concat([curr_data.iloc[[0, 1, -2, -1]] for curr_data in accum_bl])
+    biaslens_sample["dataset"] = "BiasLens-GenWhy"
+
+    # Save
+    save_path_formatter = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig5c-sup_table-{dataset}.csv")
+    cols = [
+        'dataset', s_group_col, 'num_samples', 'perc_bias_flipped', 'diff_unb_to_b',
+         'U->B', 'B->U',
+    ]
+    fmt_sample[cols].to_csv(save_path_formatter.format(dataset="fmt10k"), index=False)
+    biaslens_sample[cols].to_csv(save_path_formatter.format(dataset="biaslens_why"), index=False)
+
+
+# Supplement to Figure 5b.
 def change_in_response_by_social_group_biaslens():
     dataset = "BiasLens-Choices"
     # Load datasets
@@ -2085,7 +2520,6 @@ def change_in_response_by_social_group_biaslens():
         df_probs,
         groupby_cols=["stereotyped_group"],
         df_socialgroup=df_socialgroup,
-        bootstrap=True,
     )
     accum_data["across_all_models"] = df_across_all_models.loc[chosen_groups].to_dict(orient="index")
 
@@ -2096,7 +2530,6 @@ def change_in_response_by_social_group_biaslens():
         df_probs,
         groupby_cols=["stereotyped_group", "model_base"],
         df_socialgroup=df_socialgroup,
-        bootstrap=True,
     )
 
     # Get specific group
@@ -2112,7 +2545,6 @@ def change_in_response_by_social_group_biaslens():
         df_probs,
         groupby_cols=["stereotyped_group", "model_modified"],
         df_socialgroup=df_socialgroup,
-        bootstrap=True,
     )
 
     # Get first and last
@@ -2148,10 +2580,10 @@ def change_in_response_by_social_group_biaslens():
         "m": "Male",
         "afghan": "Afghan",
     }
-    df_plot_data["stereotyped_group"] = df_plot_data["stereotyped_group"].map(lambda x: remame_stereotyped_group[x])
+    df_plot_data["stereotyped_group"] = df_plot_data["stereotyped_group"].map(lambda x: remame_stereotyped_group.get(x, x))
 
     # Create plot
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+    viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
     fig, axs = plt.subplots(3, 1, sharex=True)
     agg_levels = list(rename_agg_level.values())
     for idx, agg_level in enumerate(agg_levels):
@@ -2268,44 +2700,9 @@ def change_in_response_flipping():
     df_table_2.to_csv(os.path.join(save_dir, "table_2_uncertainty.csv"), index=False)
 
 
-# Supplementary Table. INT8 weight quantization leads to fewer changes
-def change_in_agg_metrics_int8():
-    datasets = [
-        "CEB-Jigsaw",
-        "CEB-Adult",
-        "CEB-Credit",
-    ]
-
-    accum_metrics = {
-        "prop_sig-by_qmethod": [],
-    }
-    for dataset in datasets:
-        df_curr = load_closed_dataset_cached_agg_metrics(dataset, keep_w8a8=True)
-        # Aggregated by dataset
-        df_curr_by_dataset = df_curr.groupby(["model_modified", "model_base", "q_method_full"])["is_significant"].any().reset_index()
-        # Which quantization strategies
-        accum_metrics["prop_sig-by_qmethod"].append(groupby_avg(df_curr_by_dataset, "q_method_full", dataset=dataset))
-
-    # By quantization
-    order = [
-        "RTN W8A16",
-        "RTN W8A8",
-        "RTN W4A16",
-        "RTN W4A16 + SQ",
-        "GPTQ W4A16",
-        "AWQ W4A16"
-    ]
-    df_qmethod = pd.concat(accum_metrics["prop_sig-by_qmethod"])
-    df_qmethod = df_qmethod.pivot(index="q_method_full", columns="dataset", values="is_significant")
-    df_qmethod = df_qmethod.loc[order]
-    # Supplementary
-    df_w8_supp = df_qmethod.dropna(axis=1)
-    df_w8_supp = (100 * df_w8_supp).round(1)
-    print("(Avg) W4:", df_w8_supp.loc[df_w8_supp.index.str.contains("W4")].mean(axis=0))
-    print("(Avg) W8:", df_w8_supp.loc[df_w8_supp.index.str.contains("W8")].mean(axis=0))
-    df_w8_supp.to_csv(os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "supp_table-w8_qmethod.csv"))
-
-
+################################################################################
+#                                Supplementary                                 #
+################################################################################
 # DEPRECATED: Table 2. Response flipping by positive/negative non-significant bias
 def change_in_response_flipping_by_sig_bias():
     datasets = [
@@ -2407,7 +2804,7 @@ def change_in_response_flipping_by_sig_bias():
     df_table_2.to_csv(os.path.join(save_dir, "deprecated-table_2.csv"))
 
 
-# Supplementary Table 2.
+# DEPRECATED. Supplementary Table 2.
 def changes_in_model_selection():
     ############################################################################
     #                         Bias Identification                              #
@@ -2501,9 +2898,6 @@ def changes_in_model_selection():
     df_metric_ranking_all.to_csv(os.path.join(save_dir, "supp-gender_bias-metric_rankings.csv"))
 
 
-################################################################################
-#                              Open-Ended Results                              #
-################################################################################
 def get_mask_on_grammar_and_redundancy(df_data):
     # Create mask to keep samples that are within [5th to 95th quantiles]
     threshold_cols = ["lt-error_count", "max_5gram_rep", "max_4gram_rep", "max_3gram_rep", "max_2gram_rep", "max_1gram_rep"]
@@ -2519,7 +2913,7 @@ def get_mask_on_grammar_and_redundancy(df_data):
     return keep_mask
 
 
-# Figure 4.
+# Supplementary Figure.
 def change_in_text_patterns():
     dataset_names = [
         "BiasLens-GenWhy",
@@ -2703,298 +3097,6 @@ def change_in_text_patterns():
         )
 
 
-# Figure 5.
-def change_in_text_bias():
-    dataset_names = [
-        "BiasLens-GenWhy",
-        "CEB-Continuation",
-        "CEB-Conversation",
-        "FMT10K-IM",
-    ]
-    accum_data = []
-    accum_mask = []
-    for dataset in dataset_names:
-        # Load sample metrics
-        df_valid = load_open_dataset_cached_indiv_metrics(dataset)
-        df_valid = audit_datasets.merge_chatgpt_parsed(df_valid, dataset)
-        # Drop rows with missing values
-        check_na_cols = []
-        for col in OPEN_ENDED_REQUIRED_COLS:
-            check_na_cols.append(f"{col}_base")
-            check_na_cols.append(f"{col}_modified")
-        df_valid = df_valid.dropna(subset=check_na_cols)
-        accum_data.append(df_valid)
-        accum_mask.append(get_mask_on_grammar_and_redundancy(df_valid))
-
-    print("Keep Proportions:", [m.mean() for m in accum_mask])
-    df_data = pd.concat(accum_data)
-    df_data["Keep"] = np.concatenate(accum_mask)
-
-    # Fill in all language tool NA with 0
-    lt_cols = [col for col in df_data.columns if col.startswith("lt-")]
-    df_data[lt_cols] = df_data[lt_cols].fillna(0)
-
-    # TODO: Filter
-    # df_filtered = df_data[df_data["Keep"]]
-
-    # Proportion of responses that flip in each direction
-    pred_cols = [col for col in df_data.columns if col.startswith("pred_prompt-")]
-    df_data["pred_prompt-is_harmful"].value_counts()
-
-    # Safety flipping
-    safe_base = df_data["eval_llama-is_safe_base"].map(lambda x: "safe" if x else "unsafe")
-    safe_modified = df_data["eval_llama-is_safe_modified"].map(lambda x: "safe" if x else "unsafe")
-    df_data["safety_flipped"] = safe_base + "_to_" + safe_modified
-    df_data["safety_flipped"] = df_data["safety_flipped"].map(lambda x: None if x in ["safe_to_safe", "unsafe_to_unsafe"] else x)
-    map_hate = {
-        (True, False): "safe_to_hateful",
-        (False, True): "hateful_to_safe"
-    }
-    df_data["hate_flipped"] = df_data.apply(
-        lambda row: map_hate.get((row["eval_llama-is_hate_base"], row["eval_llama-is_hate_modified"])),
-        axis=1,
-    )
-
-    # Store flipped direction
-    # NOTE: So that this is compatible with `compute_groupby_bias_flip_diff`
-    df_data["flipped-unb_to_b"] = None
-    mask = ~df_data["safety_flipped"].isna()
-    df_data.loc[mask, "flipped-unb_to_b"] = (df_data.loc[mask, "safety_flipped"] == "safe_to_unsafe")
-    df_data["Bias_Flipped"] = df_data["safety_flipped"].notnull()
-    df_data["Flipped"] = df_data["Bias_Flipped"]
-
-
-    def perform_grouping(df_data, group_key):
-        df_safety_flipped = df_data.groupby(group_key)["safety_flipped"].value_counts(dropna=False, normalize=True).reset_index()
-        df_safety_flipped = df_safety_flipped.dropna()
-        df_safe_to_unsafe = df_safety_flipped[df_safety_flipped["safety_flipped"] == "safe_to_unsafe"].set_index(group_key)["proportion"]
-        df_unsafe_to_safe = df_safety_flipped[df_safety_flipped["safety_flipped"] == "unsafe_to_safe"].set_index(group_key)["proportion"]
-        df_safe_to_unsafe.name = "safe_to_unsafe"
-        df_unsafe_to_safe.name = "unsafe_to_safe"
-        df_curr_safety = pd.concat([df_safe_to_unsafe, df_unsafe_to_safe], axis=1).fillna(0)
-        # Add unsafe to safe to get bar value needed
-        df_curr_safety["unsafe_to_safe"] = 100 * df_curr_safety["unsafe_to_safe"]
-        df_curr_safety["safe_to_unsafe"] = 100 * df_curr_safety["safe_to_unsafe"]
-        df_curr_safety["unsafe_to_safe_sum"] = (df_curr_safety["unsafe_to_safe"] + df_curr_safety["safe_to_unsafe"])
-        df_curr_safety["unsafe_to_safe_diff"] = (df_curr_safety["unsafe_to_safe"] - df_curr_safety["safe_to_unsafe"])
-        return df_curr_safety
-
-
-    def plot_safety_flipping_by(df_curr_safety, group_key, x_lim=25, order=None, ax=None):
-        # Add unsafe to safe to get bar value needed
-        # Create plot
-        viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-        # Colors for U->B, B->U, No Flipping
-        bar_colors = [
-            "#C78E72",  # Muted Clay
-            "#6E82B5",  # Dusty Blue
-        ]
-        # Plot Biased to Unbiased
-        ax_given = ax is not None
-        ax = viz_utils.catplot(
-            df_curr_safety.reset_index(),
-            plot_type="bar",
-            color=bar_colors[1],
-            y=group_key,
-            x="unsafe_to_safe_sum",
-            order=order,
-            x_lim=[0, x_lim],
-            ax=ax,
-        )
-        # Plot Unbiased to Biased
-        ax = viz_utils.catplot(
-            df_curr_safety.reset_index(),
-            plot_type="bar",
-            color=bar_colors[0],
-            y=group_key,
-            x="safe_to_unsafe",
-            order=order,
-            x_lim=[0, x_lim],
-            xlabel="Percentage of Responses",
-            ylabel="",
-            ax=ax,
-        )
-        # If axis is given, return here
-        if ax_given:
-            return ax
-        # Create legend
-        proxy_handles = [
-            mpatches.Patch(color=bar_colors[0], label="Safe to Unsafe"),
-            mpatches.Patch(color=bar_colors[1], label="Unsafe to Safe"),
-        ]
-        plt.legend(
-            handles=proxy_handles,
-            loc="lower center",
-            ncol=2,
-            bbox_to_anchor=(0.5, 0.0),
-        )
-        # Save plot
-        save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(save_dir, f"fig6-safety_flip_by_{group_key}.svg")
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        plt.close()
-
-
-    # Quantization method order
-    q_order = [
-        "RTN W8A16",
-        "RTN W4A16",
-        "RTN W4A16 + SQ",
-        "GPTQ W4A16",
-        "AWQ W4A16"
-    ]
-
-    # Fig 6a. Dataset
-    group_key = "dataset"
-    df_curr_safety = perform_grouping(df_data, group_key)
-    plot_safety_flipping_by(df_curr_safety, group_key, x_lim=25)
-
-    # Fig 6b. Quantization method
-    group_key = "q_method_full"
-    df_curr_safety = perform_grouping(df_data, group_key)
-    plot_safety_flipping_by(df_curr_safety, group_key, x_lim=20, order=q_order)
-
-
-    s_group_col = "pred_prompt-social_group"
-    def group_dataset_by_social_group(df_data, dataset="BiasLens", min_samples=0, group_key=s_group_col):
-        df_curr = df_data[df_data["dataset"] == dataset]
-        if dataset.startswith("CEB"):
-            df_curr[s_group_col] = df_curr["descriptor"]
-        # Get social groups with at least 30 questions across social axis datasets
-        df_curr_base = df_curr[["idx", s_group_col]].drop_duplicates()
-        df_curr_base[s_group_col] = df_curr_base[s_group_col].str.lower()
-        df_social_group_size = df_curr_base.groupby(s_group_col).size().reset_index(name="num_samples")
-        # Group by social group
-        df_curr_sgroups = perform_grouping(df_curr, group_key).reset_index()
-        # Add number of samples
-        df_curr_sgroups = df_curr_sgroups.merge(df_social_group_size, how="inner", on=s_group_col)
-        # Filter for at least 30 samples and no multiple groups
-        df_curr_sgroups = df_curr_sgroups[(~df_curr_sgroups[s_group_col].str.contains(",")) & (df_curr_sgroups["num_samples"] >= min_samples)]
-        df_curr_sgroups = df_curr_sgroups.sort_values(by="unsafe_to_safe_diff")
-        return df_curr_sgroups
-
-
-    ############################################################################
-    #                               Plotting                                   #
-    ############################################################################
-    fmt_bias_groups = group_dataset_by_social_group(df_data, "FMT10K", 30).iloc[[0, -1]]
-    fmt_bias_groups["dataset"] = "FMT10K"
-    biaslens_groups = group_dataset_by_social_group(df_data, "BiasLens", 30).iloc[[0, -1]]
-    biaslens_groups["dataset"] = "BiasLens"
-
-    # Create plot
-    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
-    fig, axs = plt.subplots(2, 1, sharex=True)
-    group_to_data = {
-        "BiasLens": biaslens_groups,
-        "FMT10K": fmt_bias_groups,
-    }
-    for idx, (name, df_curr_data) in enumerate(group_to_data.items()):
-        ax = axs[idx]
-        plot_kwargs = {
-            "xlabel": "",
-            "title": None,
-            "legend": False,
-        }
-        if idx == len(group_to_data) - 1:
-            plot_kwargs["xlabel"] = "Percentage of Responses"
-        # Colors for U->B, B->U, No Flipping
-        bar_colors = [
-            "#C78E72",  # Muted Clay
-            "#6E82B5",  # Dusty Blue
-        ]
-        plot_safety_flipping_by(df_curr_data, s_group_col, ax=ax, x_lim=20)
-        # Set y-axis label horizontal
-        ax.set_ylabel(
-            name,
-            rotation="horizontal",
-            ha='right',
-            va='center',
-            labelpad=20
-        )
-
-    # Create legend
-    proxy_handles = [
-        mpatches.Patch(color=bar_colors[0], label="Safe to Unsafe"),
-        mpatches.Patch(color=bar_colors[1], label="Unsafe to Safe"),
-    ]
-    fig.legend(
-        handles=proxy_handles,
-        loc="lower center",
-        ncol=2,
-        bbox_to_anchor=(0.5, 0.0),
-        bbox_transform=fig.transFigure,
-    )
-    # Save plot
-    fig.subplots_adjust(hspace=0.3)
-    save_dir = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics")
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, "fig6-open_flipping_by_social_group.svg")
-    plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    plt.close()
-
-
-    ############################################################################
-    #                         Supplementary Table                              #
-    ############################################################################
-    def group_dataset_by_social_group_v2(df_data, dataset="BiasLens", s_group_col=s_group_col, add_group_keys=None):
-        df_curr = df_data[df_data["dataset"] == dataset]
-        if dataset.startswith("CEB"):
-            df_curr[s_group_col] = df_curr["descriptor"]
-        # Get social groups with at least 30 questions across social axis datasets
-        df_curr_base = df_curr[["idx", s_group_col]].drop_duplicates()
-        df_curr_base[s_group_col] = df_curr_base[s_group_col].str.lower()
-        df_social_group_size = df_curr_base.groupby(s_group_col).size().reset_index(name="num_samples")
-        mask = (df_social_group_size["num_samples"] >= 30) & (~df_social_group_size[s_group_col].str.contains(","))
-        df_social_group_size = df_social_group_size[mask]
-        # Group by social group
-        group_keys = [s_group_col]
-        if add_group_keys:
-            group_keys.extend(add_group_keys)
-        df_curr_sgroups = compute_groupby_bias_flip_diff(
-            df_curr,
-            groupby_cols=group_keys,
-            df_socialgroup=df_social_group_size,
-            social_group_col=s_group_col,
-            bootstrap=True,
-        ).reset_index()
-        return df_curr_sgroups
-
-    # FairMT-Bench
-    fmt_bias_groups_across_models = group_dataset_by_social_group_v2(df_data, "FMT10K")
-    fmt_bias_groups_by_base_model = group_dataset_by_social_group_v2(df_data, "FMT10K", add_group_keys=["model_base"])
-    fmt_bias_groups_by_modified_model = group_dataset_by_social_group_v2(df_data, "FMT10K", add_group_keys=["model_modified"])
-    fmt_bias_groups_across_models["agg"] = "All Quantized Models"
-    fmt_bias_groups_by_base_model["agg"] = "All Quantizations of 1 Model"
-    fmt_bias_groups_by_modified_model["agg"] = "Single Quantized Model"
-    accum_fmt = [fmt_bias_groups_across_models, fmt_bias_groups_by_base_model, fmt_bias_groups_by_modified_model]
-
-    # BiasLens-Why
-    biaslens_groups_across_models = group_dataset_by_social_group_v2(df_data, "BiasLens")
-    biaslens_groups_by_base_model = group_dataset_by_social_group_v2(df_data, "BiasLens", add_group_keys=["model_base"])
-    biaslens_groups_by_modified_model = group_dataset_by_social_group_v2(df_data, "BiasLens", add_group_keys=["model_modified"])
-    biaslens_groups_across_models["agg"] = "All Quantized Models"
-    biaslens_groups_by_base_model["agg"] = "All Quantizations of 1 Model"
-    biaslens_groups_by_modified_model["agg"] = "Single Quantized Model"
-    accum_bl = [biaslens_groups_across_models, biaslens_groups_by_base_model, biaslens_groups_by_modified_model]
-
-    # Get top-2 and bottom-2
-    fmt_sample = pd.concat([curr_data.iloc[[0, 1, -2, -1]] for curr_data in accum_fmt])
-    biaslens_sample = pd.concat([curr_data.iloc[[0, 1, -2, -1]] for curr_data in accum_bl])
-
-    # Save
-    save_path_formatter = os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "sup_tab-{dataset}_bias_by_sg.csv")
-    cols = [
-        'dataset', s_group_col, 'num_samples', 'perc_bias_flipped', 'diff_unb_to_b',
-         'U->B', 'B->U',
-    ]
-    fmt_sample["diff_unb_to_b"] = fmt_sample["diff_unb_to_b"].map(lambda x: MetricValue(str(x)).convert_str())
-    biaslens_sample["diff_unb_to_b"] = biaslens_sample["diff_unb_to_b"].map(lambda x: MetricValue(str(x)).convert_str())
-    fmt_sample[cols].to_csv(save_path_formatter.format(dataset="fmt10k"), index=False)
-    biaslens_sample[cols].to_csv(save_path_formatter.format(dataset="biaslens_why"), index=False)
-
-
 def change_in_text_bias_fmt10k():
     s_group_col = "pred_prompt-social_group"
     dataset_names = ["FMT10K-IM"]
@@ -3057,7 +3159,7 @@ def change_in_text_bias_fmt10k():
         df_curr = df_data[df_data["dataset"] == dataset]
         if dataset.startswith("CEB"):
             df_curr[s_group_col] = df_curr["descriptor"]
-        # Get social groups with at least 30 questions across social axis datasets
+        # Get social groups with at least `min_n` questions across social axis datasets
         df_curr_base = df_curr[["idx", s_group_col]].drop_duplicates()
         df_curr_base[s_group_col] = df_curr_base[s_group_col].str.lower()
         df_social_group_size = df_curr_base.groupby(s_group_col).size().reset_index(name="num_samples")
@@ -3072,7 +3174,6 @@ def change_in_text_bias_fmt10k():
             groupby_cols=group_keys,
             df_socialgroup=df_social_group_size,
             social_group_col=s_group_col,
-            bootstrap=True,
         ).reset_index()
         return df_curr_sgroups
 
@@ -3095,7 +3196,6 @@ def change_in_text_bias_fmt10k():
         'U->B', 'B->U',
     ]
     cols.extend([col for col in fmt_sample.columns if col not in cols])
-    fmt_sample["diff_unb_to_b"] = fmt_sample["diff_unb_to_b"].map(lambda x: MetricValue(str(x)).convert_str())
     fmt_sample[cols].to_csv(save_path_formatter.format(dataset="fmt10k"), index=False)
 
 
@@ -3161,7 +3261,7 @@ def change_in_text_bias_biaslens():
         df_curr = df_data[df_data["dataset"] == dataset]
         if dataset.startswith("CEB"):
             df_curr[s_group_col] = df_curr["descriptor"]
-        # Get social groups with at least 30 questions across social axis datasets
+        # Get social groups with at least `min_n` questions across social axis datasets
         df_curr_base = df_curr[["idx", s_group_col]].drop_duplicates()
         df_curr_base[s_group_col] = df_curr_base[s_group_col].str.lower()
         df_social_group_size = df_curr_base.groupby(s_group_col).size().reset_index(name="num_samples")
@@ -3176,7 +3276,6 @@ def change_in_text_bias_biaslens():
             groupby_cols=group_keys,
             df_socialgroup=df_social_group_size,
             social_group_col=s_group_col,
-            bootstrap=True,
         ).reset_index()
         return df_curr_sgroups
 
@@ -3199,7 +3298,6 @@ def change_in_text_bias_biaslens():
         'U->B', 'B->U',
     ]
     cols.extend([col for col in biaslens_sample.columns if col not in cols])
-    biaslens_sample["diff_unb_to_b"] = biaslens_sample["diff_unb_to_b"].map(lambda x: MetricValue(str(x)).convert_str())
     biaslens_sample[cols].to_csv(save_path_formatter.format(dataset="biaslens_why"), index=False)
 
 
@@ -4597,19 +4695,15 @@ def rank_metric_values(metric_value_list, method="min"):
 ################################################################################
 #                               Helper Functions                               #
 ################################################################################
-def compute_diff_prop(df_group):
-    props = df_group["flipped-unb_to_b"].value_counts(normalize=True, dropna=False)
-    unb_to_b_prop = props[True] if True in props.index else 0
-    b_to_unb_prop = props[False] if False in props.index else 0
-    return round(100 * (unb_to_b_prop - b_to_unb_prop), 2)
-
-
 def compute_groupby_bias_flip_diff(
         df_data, groupby_cols,
         df_socialgroup=None,
-        bootstrap=True,
         social_group_col="stereotyped_group",
     ):
+    """
+    Group by social group and compute percentages of unbiased to biased flips
+    and vice versa
+    """
     # Ensure stereotyped group is in the columns
     if social_group_col not in groupby_cols:
         groupby_cols = [social_group_col] + groupby_cols
@@ -4619,39 +4713,28 @@ def compute_groupby_bias_flip_diff(
         exist_groups = set(df_socialgroup[social_group_col].unique())
         df_data = df_data[df_data[social_group_col].isin(exist_groups)]
 
-    # Option 1. Without bootstrap
-    if not bootstrap:
-        df_grouped = df_data.groupby(groupby_cols).apply(compute_diff_prop).reset_index(name="diff_unb_to_b")
-        df_grouped["diff_unb_to_b-mean"] = df_grouped["diff_unb_to_b"]
-    # Option 2. Bootstrap
-    else:
-        diff_unb_to_b = groupby_bootstrap_metric(
-            df_data, groupby_cols,
-            metric_func=compute_diff_prop,
-            parallel_groups=True
-        )
-        df_grouped = pd.Series(diff_unb_to_b).reset_index(name="diff_unb_to_b")
-        df_grouped = df_grouped.rename(columns=dict(zip(df_grouped.columns[:len(groupby_cols)], groupby_cols)))
-        df_grouped["diff_unb_to_b"] = df_grouped["diff_unb_to_b"].map(MetricValue)
-        df_grouped["diff_unb_to_b-mean"] = df_grouped["diff_unb_to_b"].map(lambda x: x.mean)
+    # Calculate percentages of different types of flips directly
+    df_grouped = df_data.groupby(groupby_cols).agg(
+        perc_res_flipped=("Flipped", lambda x: 100 * x.mean()),
+        perc_bias_flipped=("Bias_Flipped", lambda x: 100 * x.mean()),
+        unb_to_b=("flipped-unb_to_b", lambda x: 100 * x.value_counts(normalize=True, dropna=False).get(True, 0)),
+        b_to_unb=("flipped-unb_to_b", lambda x: 100 * x.value_counts(normalize=True, dropna=False).get(False, 0)),
+    ).reset_index()
 
-    # Add percentages of flipping
-    df_perc_res_flipped = (100 * df_data.groupby(groupby_cols)["Flipped"].mean()).reset_index(name="perc_res_flipped")
-    df_grouped = df_grouped.merge(df_perc_res_flipped, how="inner", on=groupby_cols)
-    df_perc_bias_flipped = (100 * df_data.groupby(groupby_cols)["Bias_Flipped"].mean()).reset_index(name="perc_bias_flipped")
-    df_grouped = df_grouped.merge(df_perc_bias_flipped, how="inner", on=groupby_cols)
+    # The 'diff_unb_to_b' metric is now derived from the direct percentages, making it a clear and explicit calculation
+    df_grouped["diff_unb_to_b"] = df_grouped["unb_to_b"] - df_grouped["b_to_unb"]
+    
+    # Rename columns to match original function's output
+    df_grouped = df_grouped.rename(columns={"unb_to_b": "U->B", "b_to_unb": "B->U"})
 
     # Add social group counts
     if df_socialgroup is not None:
         df_grouped = df_grouped.merge(df_socialgroup, how="inner", on=[social_group_col])
 
     # Sort by diff
-    df_grouped = df_grouped.set_index(social_group_col).sort_values("diff_unb_to_b-mean")
+    df_grouped = df_grouped.set_index(social_group_col).sort_values("diff_unb_to_b")
 
-    # Add percentage of responses that go from unbiased (U) to biased (B), and vice versa
-    df_grouped["U->B"] = (df_grouped["perc_bias_flipped"] + df_grouped["diff_unb_to_b-mean"]) / 2
-    df_grouped["B->U"] = (df_grouped["perc_bias_flipped"] - df_grouped["diff_unb_to_b-mean"]) / 2
-
+    # The bootstrap logic is removed from this simplified version for clarity, as it introduces complexity and is a more advanced technique.
     return df_grouped
 
 
