@@ -35,10 +35,6 @@ echo $port
 export SYSTEM_PROMPT_TYPE="no_sys_prompt"
 
 
-# TODO: Remove
-# HuggingFace username
-export HF_DATA_USERNAME="stan-hua"
-
 ################################################################################
 #                          Discriminative Evaluation                           #
 ################################################################################

@@ -34,10 +34,6 @@
 # Configures vLLM to avoid multiprocessing issue
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
-# TODO: Remove
-# HuggingFace username
-export HF_DATA_USERNAME="stan-hua"
-
 # List of models
 ORIG_MODELS=(
     meta-llama/Llama-3.1-8B-Instruct
