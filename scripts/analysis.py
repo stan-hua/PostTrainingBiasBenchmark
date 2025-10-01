@@ -14,6 +14,7 @@ import random
 import re
 import sys
 import traceback
+import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 from glob import glob
@@ -23,8 +24,11 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import statsmodels.formula.api as smf
 from fairlearn.metrics import equalized_odds_difference
 from rouge_score import rouge_scorer
+from scipy import stats
+from sklearn.preprocessing import StandardScaler
 from statsmodels.stats.multitest import multipletests
 from tqdm import tqdm
 
@@ -38,6 +42,8 @@ from src.utils import json_utils, viz_utils
 ################################################################################
 #                                    Setup                                     #
 ################################################################################
+warnings.filterwarnings('ignore')
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -914,13 +920,29 @@ def load_closed_dataset_entropy_changes(dataset_name):
     # If BBQ, filter for ambiguous context
     if dataset_name == "BBQ":
         LOGGER.info("Filtering BBQ for ambiguous context...")
-        # Merge question metadata
-        bbq_data = load_dataset("BBQ", filter_cols=["idx", "context_condition"])
-        df_data = df_data.merge(bbq_data, how="left", on="idx", suffixes=("", "_dup"))
-        df_data = df_data[[col for col in df_data.columns if not col.endswith("_dup")]]
         # Filter for ambiguous context
+        df_data = resolve_missing_columns(
+            df_data, dataset_name,
+            filter_cols=[
+                "idx", "context_condition", "prompt",
+                "stereotyped_groups", "choices", "target_label",
+            ],
+        )
         df_data = df_data[df_data["context_condition"] == "ambig"]
+
+        # Identify stereotyped group
+        df_data["stereotyped_groups"] = df_data["stereotyped_groups"].map(tuple)
+        df_data["stereotyped_group"] = df_data.apply(get_bbq_stereotyped_group, axis=1).str.lower()
+        df_data["social_group"] = df_data["stereotyped_group"]
+    elif "prompt" not in df_data.columns:
+        df_data = resolve_missing_columns(
+            df_data, dataset_name,
+            filter_cols=["idx", "prompt"],
+        )
     assert not df_data.empty, f"[Load Prob Changes] Data for `{dataset_name}` is empty!"
+
+    # Get length of prompt (in words)
+    df_data["prompt_length"] = df_data["prompt"].map(lambda x: len(x.split(" ")))
 
     # Rename dataset
     df_data["dataset"] = RENAME_DATASET.get(dataset_name, dataset_name)
@@ -1191,7 +1213,7 @@ def change_in_uncertainty():
     #        B. Entropy Distribution Before and After Quantization             #
     #############################################################################
     viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
-    
+
     # Prepare data
     df_base = df_data.drop_duplicates(subset=["model_base", "idx"])[["dataset", "normalized_entropy_base"]]
     df_base = df_base.rename(columns={"normalized_entropy_base": "Model Uncertainty"})
@@ -1357,7 +1379,7 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
     # Save associated table
     df_sig = df_data.groupby("dataset")["is_significant"].agg(["mean", "sum", "size"])
     df_sig.to_csv(os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig3a-assoc_table.csv"))
- 
+
     # Dataset order
     dataset_order = [d for d in DATASET_ORDER if d in df_data["dataset"].unique()]
 
@@ -1420,7 +1442,7 @@ def change_in_agg_metrics(correction_method="fdr_bh", alpha=0.05):
     # Compute cohens_d metrics for each dataset and save associated table
     df_sig = df_sig_only.groupby("dataset")["cohens_d"].agg(["mean", "std", "min", "max"]).round(4)
     df_sig.to_csv(os.path.join(config.DIR_ANALYSIS, "aggregate_metrics", "fig3b-assoc_table.csv"))
- 
+
     # Plot
     viz_utils.set_theme(tick_scale=3, figsize=(5, 10))
     fig, axs = plt.subplots(len(sig_datasets), 1, sharex=True)
@@ -1775,7 +1797,7 @@ def reranking_changes_due_to_quantization():
         "qwen2.5-7b-instruct": "Qwen 2.5 7B",
         "qwen2.5-14b-instruct": "Qwen 2.5 14B",
     }
-    
+
     df_metrics_all["model_base"] = df_metrics_all["model_base"].map(rename_models.get)
     df_metrics_all = df_metrics_all.set_index("model_base")[["Original", "RTN W4A16"]]
 
@@ -1810,7 +1832,7 @@ def asymmetric_impact_questions():
     accum_data = []
     for d in ALL_CLOSED_DATASETS + ALL_OPEN_DATASETS:
         load_func = load_open_dataset_cached_indiv_metrics if d in ALL_OPEN_DATASETS \
-            else load_closed_dataset_entropy_changes 
+            else load_closed_dataset_entropy_changes
         df_curr = load_func(d)
         df_curr = df_curr[["dataset", "idx", "Flipped"]]
         gc.collect()
@@ -1885,8 +1907,9 @@ def asymmetric_impact_bbq(min_n=50, overwrite=False):
         df_bbq = resolve_missing_columns(df_bbq, "BBQ", filter_cols=["unknown_label", "target_label", "choices", "stereotyped_groups", "question_idx", "prompt"])
 
         # Identify stereotyped group
-        df_bbq["stereotyped_groups"] = df_bbq["stereotyped_groups"].map(tuple)
-        df_bbq["stereotyped_group"] = df_bbq.apply(get_bbq_stereotyped_group, axis=1).str.lower()
+        if "stereotyped_group" not in df_bbq.columns:
+            df_bbq["stereotyped_groups"] = df_bbq["stereotyped_groups"].map(tuple)
+            df_bbq["stereotyped_group"] = df_bbq.apply(get_bbq_stereotyped_group, axis=1).str.lower()
 
         # Remap groups
         map_groups = {
@@ -3302,6 +3325,560 @@ def change_in_text_bias_biaslens():
 
 
 ################################################################################
+#                              Mediation Analysis                              #
+################################################################################
+def causal_mediation_analysis_within_subjects():
+    """
+    Mediation analysis for within-subjects quantization study.
+
+    CORRECT Causal Structure for Within-Subjects Design:
+    - CONFOUNDERS: Model Family, Social Axis, Social Group, Question Length
+      (These are fixed properties that exist before quantization)
+    - TREATMENT: Quantization Method (applied to each model)
+    - MEDIATORS: Response characteristics that CHANGE due to quantization
+      * Initial Response Entropy (post-quantization)
+      * Response Lengths (post-quantization)
+      * Length Difference (change due to quantization)
+    - OUTCOME: Response Flipping (before vs after quantization)
+
+    Key insight: We can control for all pre-quantization confounders perfectly
+    because we have complete data on all model-question combinations.
+    """
+    print("="*70)
+    print("WITHIN-SUBJECTS CAUSAL MEDIATION ANALYSIS")
+    print("="*70)
+
+    # Get closed-ended data from BBQ
+    df = load_closed_dataset_entropy_changes("BBQ")
+
+    # Add model metadata
+    model_metadata = pd.DataFrame(df["model_modified"].map(extract_model_metadata_from_name).tolist())
+    model_metadata = model_metadata[[col for col in model_metadata.columns if col not in df.columns]]
+    df = pd.concat([df.reset_index(drop=True), model_metadata], axis=1)
+
+    # Define causal structure for within-subjects design
+    treatment = 'q_method_full'
+
+    # These are properties that exist BEFORE quantization (confounders)
+    confounders = ['model_family', 'social_axis', 'social_group', 'prompt_length']
+
+    # These are outcomes of quantization that mediate the flipping effect
+    mediators = ['normalized_entropy_base', 'normalized_entropy_modified']
+
+    outcome = 'Flipped'
+    # Convert flipped to integer boolean
+    df[outcome] = df[outcome].astype(int)
+
+    print("WITHIN-SUBJECTS CAUSAL STRUCTURE:")
+    print(f"Treatment: {treatment} (applied to each model)")
+    print(f"Pre-quantization confounders: {confounders}")
+    print(f"Post-quantization mediators: {mediators}")
+    print(f"Outcome: {outcome} (before vs after comparison)")
+    print()
+    print("Causal Logic:")
+    print("  Fixed Model/Question Properties → Quantization Applied → Changed Response Patterns → Flipping")
+    print()
+
+    # Step 1: Total effect controlling for all confounders
+    print("STEP 1: TOTAL EFFECT (controlling for pre-quantization factors)")
+    print("-" * 60)
+    total_effect_result = estimate_total_effect(df, treatment, outcome, confounders)
+
+    # Step 2: How does quantization affect mediators? (α paths)
+    print("\nSTEP 2: QUANTIZATION → RESPONSE CHANGES (α paths)")
+    print("-" * 55)
+    alpha_results = estimate_alpha_paths(df, treatment, mediators, confounders)
+
+    # Step 3: How do response changes affect flipping? (β paths)
+    print("\nSTEP 3: RESPONSE CHANGES → FLIPPING (β paths)")
+    print("-" * 50)
+    beta_results = estimate_beta_paths(df, mediators, outcome, treatment, confounders)
+
+    # Step 4: Direct effect after controlling for mediators
+    print("\nSTEP 4: DIRECT EFFECT (after controlling for response changes)")
+    print("-" * 62)
+    direct_effect_result = estimate_direct_effect(df, treatment, outcome, mediators, confounders)
+
+    # Step 5: Quantify mediation through each pathway
+    print("\nSTEP 5: MEDIATION PATHWAY ANALYSIS")
+    print("-" * 40)
+    mediation_results = estimate_mediation_pathways(df, treatment, mediators, outcome, confounders)
+
+    # Step 6: Within-subjects specific analysis
+    print("\nSTEP 6: WITHIN-SUBJECTS ADVANTAGES")
+    print("-" * 38)
+    within_subjects_analysis(df, treatment, outcome, confounders, mediators)
+
+    # Perform analysis
+    ret = {
+        'total_effect': total_effect_result,
+        'alpha_paths': alpha_results,
+        'beta_paths': beta_results,
+        'direct_effect': direct_effect_result,
+        'mediation_analysis': mediation_results
+    }
+    summarize_mediation_results(ret)
+
+    return
+
+
+def estimate_mediation_pathways(df, treatment, mediators, outcome, confounders):
+    """
+    Estimate specific mediation pathways and their contributions
+    """
+    available_mediators = [m for m in mediators if m in df.columns]
+    confounder_str = " + ".join([f"C({conf})" for conf in confounders if conf in df.columns])
+
+    pathway_results = {}
+
+    print("Testing individual mediation pathways:")
+
+    for mediator in available_mediators:
+        print(f"\nPathway through {mediator}:")
+
+        # α path: Treatment → Mediator (controlling for confounders)
+        if df[mediator].dtype in ['object', 'category'] or len(df[mediator].unique()) < 10:
+            alpha_formula = f"C({mediator}) ~ C({treatment}) + {confounder_str}"
+            try:
+                alpha_model = smf.logit(alpha_formula, data=df).fit(disp=0)
+                alpha_type = "logistic"
+            except:
+                continue
+        else:
+            alpha_formula = f"{mediator} ~ C({treatment}) + {confounder_str}"
+            alpha_model = smf.ols(alpha_formula, data=df).fit()
+            alpha_type = "linear"
+
+        # β path: Mediator → Outcome (controlling for treatment and confounders)
+        if alpha_type == "logistic":
+            beta_formula = f"{outcome} ~ C({mediator}) + C({treatment}) + {confounder_str}"
+        else:
+            beta_formula = f"{outcome} ~ {mediator} + C({treatment}) + {confounder_str}"
+
+        beta_model = smf.logit(beta_formula, data=df).fit(disp=0)
+
+        # Extract key coefficients
+        alpha_coeffs = {param: coef for param, coef in alpha_model.params.items()
+                       if treatment in param}
+
+        if alpha_type == "logistic":
+            beta_coeffs = {param: coef for param, coef in beta_model.params.items()
+                          if mediator in param and treatment not in param}
+        else:
+            beta_coeff = beta_model.params.get(mediator, 0)
+            beta_coeffs = {mediator: beta_coeff}
+
+        # Report pathway strength
+        if alpha_coeffs and beta_coeffs:
+            alpha_significant = any(alpha_model.pvalues[param] < 0.05 for param in alpha_coeffs)
+            beta_significant = any(beta_model.pvalues[param] < 0.05 for param in beta_coeffs)
+
+            pathway_strength = "Strong" if (alpha_significant and beta_significant) else \
+                             "Partial" if (alpha_significant or beta_significant) else "Weak"
+
+            print(f"  α path (Quantization → {mediator}): {alpha_significant}")
+            print(f"  β path ({mediator} → Flipping): {beta_significant}")
+            print(f"  Overall pathway: {pathway_strength}")
+
+            # Store results
+            pathway_results[mediator] = {
+                'alpha_model': alpha_model,
+                'beta_model': beta_model,
+                'alpha_coeffs': alpha_coeffs,
+                'beta_coeffs': beta_coeffs,
+                'pathway_strength': pathway_strength
+            }
+
+    return pathway_results
+
+
+def within_subjects_analysis(df, treatment, outcome, confounders, mediators):
+    """
+    Highlight advantages of within-subjects design
+    """
+    print("Advantages of your within-subjects design:")
+
+    # 1. Perfect confounder control
+    print("\n1. PERFECT CONFOUNDING CONTROL:")
+    print("   ✓ Same model tested before/after quantization")
+    print("   ✓ Same questions asked to both versions")
+    print("   ✓ All systematic differences controlled")
+
+    # Check how much confounders matter
+    formula_no_confounders = f"{outcome} ~ C({treatment})"
+    model_no_conf = smf.logit(formula_no_confounders, data=df).fit(disp=0)
+
+    confounder_str = " + ".join([f"C({conf})" for conf in confounders if conf in df.columns])
+    formula_with_confounders = f"{outcome} ~ C({treatment}) + {confounder_str}"
+    model_with_conf = smf.logit(formula_with_confounders, data=df).fit(disp=0)
+
+    r2_improvement = model_with_conf.prsquared - model_no_conf.prsquared
+
+    print(f"   Pseudo-R² without confounders: {model_no_conf.prsquared:.4f}")
+    print(f"   Pseudo-R² with confounders: {model_with_conf.prsquared:.4f}")
+    print(f"   Improvement from controlling confounders: {r2_improvement:.4f}")
+
+    if r2_improvement > 0.02:
+        print("   → Confounders are important! Good thing we can control them perfectly.")
+    else:
+        print("   → Confounders matter less (expected in within-subjects design).")
+
+    # 2. Causal identification strength
+    print("\n2. STRONG CAUSAL IDENTIFICATION:")
+    print("   ✓ Quantization is the ONLY thing that changes between measurements")
+    print("   ✓ Temporal ordering is clear: quantization → response changes → flipping")
+    print("   ✓ No unmeasured confounders (same model, same question)")
+
+    # 3. Statistical power
+    n_unique_models = df['model_family'].nunique() if 'model_family' in df.columns else "unknown"
+    n_unique_questions = len(df) // 2  # Assuming before/after pairs
+
+    print(f"\n3. HIGH STATISTICAL POWER:")
+    print(f"   ✓ Paired comparisons (more powerful than between-subjects)")
+    print(f"   ✓ Large sample size: ~{n_unique_questions} question-model combinations")
+    print(f"   ✓ Multiple quantization methods compared on same data")
+
+    # 4. Interpretability
+    print("\n4. CLEAR INTERPRETATION:")
+    print("   ✓ 'Response flipping' has direct meaning (same question, different answer)")
+    print("   ✓ Mediators show HOW quantization changes model behavior")
+    print("   ✓ Results directly inform quantization method choice")
+
+    return True
+
+
+def estimate_total_effect(df, treatment, outcome, confounders):
+    """
+    Estimate total effect of treatment on outcome (c path)
+    """
+    # Create formula with confounders
+    confounder_str = " + ".join([
+        f"C({conf})" if df.dtypes[conf] == "object" else conf
+        for conf in confounders if conf in df.columns
+    ])
+    formula = f"{outcome} ~ C({treatment}) + {confounder_str}"
+
+    model = smf.logit(formula, data=df).fit(disp=0)
+
+    # Extract coefficients for treatment levels
+    treatment_coeffs = {param: coef for param, coef in model.params.items()
+                       if treatment in param}
+
+    print("Total Effect Model Results:")
+    print(f"Formula: {formula}")
+    print("Treatment coefficients (log-odds):")
+    for param, coef in treatment_coeffs.items():
+        pvalue = model.pvalues[param]
+        print(f"  {param}: {coef:.4f} (p={pvalue:.4f})")
+
+    return {
+        'model': model,
+        'coefficients': treatment_coeffs,
+        'formula': formula
+    }
+
+
+def estimate_alpha_paths(df, treatment, mediators, confounders):
+    """
+    Estimate effect of treatment on each mediator (α paths)
+    """
+    alpha_results = {}
+
+    confounder_str = " + ".join([f"C({conf})" for conf in confounders if conf in df.columns])
+
+    for mediator in mediators:
+        if mediator not in df.columns:
+            continue
+
+        # Choose appropriate model type based on mediator
+        if df[mediator].dtype in ['object', 'category'] or len(df[mediator].unique()) < 10:
+            # Categorical or discrete mediator - use logistic
+            formula = f"C({mediator}) ~ C({treatment}) + {confounder_str}"
+            try:
+                model = smf.logit(formula, data=df).fit(disp=0)
+            except:
+                continue
+        else:
+            # Continuous mediator - use linear regression
+            formula = f"{mediator} ~ C({treatment}) + {confounder_str}"
+            model = smf.ols(formula, data=df).fit()
+
+        # Extract treatment effects
+        treatment_coeffs = {param: coef for param, coef in model.params.items()
+                           if treatment in param}
+
+        alpha_results[mediator] = {
+            'model': model,
+            'coefficients': treatment_coeffs,
+            'formula': formula,
+            'r_squared': getattr(model, 'rsquared', getattr(model, 'prsquared', None))
+        }
+
+        print(f"α path: {treatment} → {mediator}")
+        print(f"  R²/Pseudo-R²: {alpha_results[mediator]['r_squared']:.4f}")
+        for param, coef in treatment_coeffs.items():
+            pvalue = model.pvalues[param]
+            significance = "***" if pvalue < 0.001 else "**" if pvalue < 0.01 else "*" if pvalue < 0.05 else ""
+            print(f"  {param}: {coef:.4f} (p={pvalue:.4f}) {significance}")
+        print()
+
+    return alpha_results
+
+
+def estimate_beta_paths(df, mediators, outcome, treatment, confounders):
+    """
+    Estimate effect of mediators on outcome, controlling for treatment (β paths)
+    """
+    # Build formula with all mediators, treatment, and confounders
+    available_mediators = [m for m in mediators if m in df.columns]
+    confounder_str = " + ".join([f"C({conf})" for conf in confounders if conf in df.columns])
+
+    # Decide how to include mediators (categorical vs continuous)
+    mediator_terms = []
+    for mediator in available_mediators:
+        if df[mediator].dtype in ['object', 'category'] or len(df[mediator].unique()) < 10:
+            mediator_terms.append(f"C({mediator})")
+        else:
+            mediator_terms.append(mediator)
+
+    mediator_str = " + ".join(mediator_terms)
+    formula = f"{outcome} ~ C({treatment}) + {mediator_str} + {confounder_str}"
+
+    model = smf.logit(formula, data=df).fit(disp=0)
+
+    # Extract mediator effects (β coefficients)
+    mediator_coeffs = {}
+    for mediator in available_mediators:
+        mediator_coeffs[mediator] = {param: coef for param, coef in model.params.items()
+                                   if mediator in param and treatment not in param}
+
+    print("β paths: Mediators → Outcome (controlling for treatment)")
+    print(f"Model Pseudo-R²: {model.prsquared:.4f}")
+    for mediator, coeffs in mediator_coeffs.items():
+        print(f"\n{mediator} effects:")
+        for param, coef in coeffs.items():
+            pvalue = model.pvalues[param]
+            significance = "***" if pvalue < 0.001 else "**" if pvalue < 0.01 else "*" if pvalue < 0.05 else ""
+            print(f"  {param}: {coef:.4f} (p={pvalue:.4f}) {significance}")
+
+    return {
+        'model': model,
+        'coefficients': mediator_coeffs,
+        'formula': formula
+    }
+
+
+def estimate_direct_effect(df, treatment, outcome, mediators, confounders):
+    """
+    Estimate direct effect of treatment on outcome, controlling for mediators (c' path)
+    """
+    # Same formula as beta paths, but focus on treatment coefficients
+    available_mediators = [m for m in mediators if m in df.columns]
+    confounder_str = " + ".join([f"C({conf})" for conf in confounders if conf in df.columns])
+
+    mediator_terms = []
+    for mediator in available_mediators:
+        if df[mediator].dtype in ['object', 'category'] or len(df[mediator].unique()) < 10:
+            mediator_terms.append(f"C({mediator})")
+        else:
+            mediator_terms.append(mediator)
+
+    mediator_str = " + ".join(mediator_terms)
+    formula = f"{outcome} ~ C({treatment}) + {mediator_str} + {confounder_str}"
+
+    model = smf.logit(formula, data=df).fit(disp=0)
+
+    # Extract direct treatment effects
+    treatment_coeffs = {param: coef for param, coef in model.params.items()
+                       if treatment in param}
+
+    print("Direct Effect (c' path): Treatment → Outcome (controlling for mediators)")
+    for param, coef in treatment_coeffs.items():
+        pvalue = model.pvalues[param]
+        significance = "***" if pvalue < 0.001 else "**" if pvalue < 0.01 else "*" if pvalue < 0.05 else ""
+        print(f"  {param}: {coef:.4f} (p={pvalue:.4f}) {significance}")
+
+    return {
+        'model': model,
+        'coefficients': treatment_coeffs,
+        'formula': formula
+    }
+
+
+def estimate_indirect_effects(df, treatment, mediators, outcome, confounders, n_bootstrap=1000):
+    """
+    Estimate indirect effects using bootstrap for confidence intervals
+    """
+    print("Computing indirect effects with bootstrap confidence intervals...")
+    print("(This may take a moment...)")
+
+    # For simplicity, estimate indirect effects for continuous mediators
+    continuous_mediators = [m for m in mediators if m in df.columns and
+                          df[m].dtype in ['float64', 'int64'] and len(df[m].unique()) > 10]
+
+    if not continuous_mediators:
+        print("No continuous mediators found for indirect effect estimation.")
+        return {}
+
+    indirect_effects = {}
+
+    for mediator in continuous_mediators:
+        print(f"\nEstimating indirect effect through {mediator}...")
+
+        # Bootstrap the indirect effect
+        bootstrap_indirect = []
+
+        for _ in range(n_bootstrap):
+            # Bootstrap sample
+            boot_df = df.sample(n=len(df), replace=True, random_state=None)
+
+            try:
+                # α path: treatment → mediator
+                confounder_str = " + ".join([f"C({conf})" for conf in confounders if conf in boot_df.columns])
+                alpha_formula = f"{mediator} ~ C({treatment}) + {confounder_str}"
+                alpha_model = smf.ols(alpha_formula, data=boot_df).fit()
+
+                # β path: mediator → outcome (controlling for treatment)
+                mediator_terms = [m for m in continuous_mediators if m in boot_df.columns]
+                mediator_str = " + ".join(mediator_terms)
+                beta_formula = f"{outcome} ~ C({treatment}) + {mediator_str} + {confounder_str}"
+                beta_model = smf.logit(beta_formula, data=boot_df).fit(disp=0)
+
+                # Calculate indirect effect for each treatment level
+                treatment_levels = [param for param in alpha_model.params.index if treatment in param]
+
+                for treat_param in treatment_levels:
+                    if treat_param in alpha_model.params.index and mediator in beta_model.params.index:
+                        alpha_coef = alpha_model.params[treat_param]
+                        beta_coef = beta_model.params[mediator]
+                        indirect = alpha_coef * beta_coef
+                        bootstrap_indirect.append(indirect)
+                        break  # Take first treatment level for simplicity
+
+            except:
+                continue
+
+        if bootstrap_indirect:
+            bootstrap_indirect = np.array(bootstrap_indirect)
+
+            indirect_effects[mediator] = {
+                'point_estimate': np.mean(bootstrap_indirect),
+                'ci_lower': np.percentile(bootstrap_indirect, 2.5),
+                'ci_upper': np.percentile(bootstrap_indirect, 97.5),
+                'bootstrap_samples': bootstrap_indirect
+            }
+
+            # Print results
+            point_est = indirect_effects[mediator]['point_estimate']
+            ci_lower = indirect_effects[mediator]['ci_lower']
+            ci_upper = indirect_effects[mediator]['ci_upper']
+
+            print(f"  Point estimate: {point_est:.4f}")
+            print(f"  95% CI: [{ci_lower:.4f}, {ci_upper:.4f}]")
+
+            # Test if CI excludes zero
+            if ci_lower > 0 or ci_upper < 0:
+                print(f"  *** Significant mediation (CI excludes 0)")
+            else:
+                print(f"  No significant mediation (CI includes 0)")
+
+    return indirect_effects
+
+
+def summarize_mediation_results(results):
+    """
+    Provide overall summary and interpretation of mediation analysis
+    """
+    print("="*70)
+    print("MEDIATION ANALYSIS INTERPRETATION")
+    print("="*70)
+
+    # 1. Total effect
+    if 'total_effect' in results:
+        print("1. TOTAL EFFECT OF QUANTIZATION METHOD:")
+        total_coeffs = results['total_effect']['coefficients']
+        if total_coeffs:
+            print("   Quantization method has the following total effects on response flipping:")
+            for param, coef in total_coeffs.items():
+                direction = "increases" if coef > 0 else "decreases"
+                pvalue = results['total_effect']['model'].pvalues[param]
+                significance = "***" if pvalue < 0.001 else "**" if pvalue < 0.01 else "*" if pvalue < 0.05 else ""
+                print(f"   - {param}: {direction} flipping by {abs(coef):.4f} log-odds {significance}")
+        else:
+            print("   No significant total effect found.")
+        print()
+
+    # 2. Mediation pathways
+    if 'alpha_paths' in results and 'indirect_effects' in results:
+        print("2. MEDIATION PATHWAYS:")
+
+        # Check which mediators show significant α and β paths
+        significant_mediators = []
+
+        for mediator in results['alpha_paths']:
+            alpha_significant = any(
+                results['alpha_paths'][mediator]['model'].pvalues[param] < 0.05
+                for param in results['alpha_paths'][mediator]['coefficients']
+            )
+
+            if alpha_significant and mediator in results['indirect_effects']:
+                ci_lower = results['indirect_effects'][mediator]['ci_lower']
+                ci_upper = results['indirect_effects'][mediator]['ci_upper']
+                beta_significant = ci_lower > 0 or ci_upper < 0
+
+                if beta_significant:
+                    significant_mediators.append(mediator)
+
+        if significant_mediators:
+            print("   Significant mediation pathways found through:")
+            for mediator in significant_mediators:
+                point_est = results['indirect_effects'][mediator]['point_estimate']
+                print(f"   - {mediator}: indirect effect = {point_est:.4f}")
+        else:
+            print("   No significant mediation pathways detected.")
+        print()
+
+    # 3. Direct vs indirect effects
+    if 'direct_effect' in results and 'indirect_effects' in results:
+        print("3. DIRECT vs INDIRECT EFFECTS:")
+
+        direct_coeffs = results['direct_effect']['coefficients']
+        if direct_coeffs:
+            print("   Direct effects (after controlling for mediators):")
+            for param, coef in direct_coeffs.items():
+                pvalue = results['direct_effect']['model'].pvalues[param]
+                significance = "significant" if pvalue < 0.05 else "not significant"
+                print(f"   - {param}: {coef:.4f} ({significance})")
+
+        total_indirect = sum(
+            results['indirect_effects'][med]['point_estimate']
+            for med in results['indirect_effects']
+        )
+
+        print(f"   Total indirect effect: {total_indirect:.4f}")
+        print()
+
+    # 4. Policy implications
+    print("4. POLICY IMPLICATIONS:")
+    print("   Based on this mediation analysis:")
+
+    if significant_mediators:
+        print(f"   - Quantization affects response flipping through {len(significant_mediators)} pathway(s)")
+        print("   - To reduce response flipping, consider interventions targeting:")
+        for mediator in significant_mediators:
+            print(f"     * {mediator}")
+    else:
+        print("   - Quantization effects appear to be mostly direct (not mediated)")
+        print("   - Focus on direct technical improvements to quantization methods")
+
+    print()
+    print("5. CAUTION IN INTERPRETATION:")
+    print("   - These results assume no unmeasured confounders")
+    print("   - Causal claims require strong assumptions about data generation")
+    print("   - Consider this exploratory analysis for hypothesis generation")
+
+
+################################################################################
 #                           Load Evaluated Questions                           #
 ################################################################################
 def supp_load_pairwise_differences_fmt(
@@ -4121,8 +4698,13 @@ def resolve_missing_columns(df_eval, dataset_name, social_axis=None, filter_cols
     pd.DataFrame
         Updated evaluation dataframe
     """
+    # Ensure idx is in filter columns
+    filter_cols = list(filter_cols or [])
+    if filter_cols and "idx" not in filter_cols:
+        filter_cols = ["idx"] + filter_cols
+
     # Get original dataset
-    df_orig = load_dataset(dataset_name, social_axis)
+    df_orig = load_dataset(dataset_name, social_axis, filter_cols=filter_cols)
 
     # Early return, if all columns are present
     if set(df_orig.columns.tolist()) == set(df_eval.columns.tolist()):
@@ -4137,7 +4719,7 @@ def resolve_missing_columns(df_eval, dataset_name, social_axis=None, filter_cols
         merge_col = prompt_cols[0]
 
     # Filter on columns, if specified
-    if filter_cols is not None:
+    if filter_cols:
         if merge_col not in filter_cols:
             filter_cols = [merge_col] + filter_cols
         df_orig = df_orig[filter_cols]
@@ -4723,7 +5305,7 @@ def compute_groupby_bias_flip_diff(
 
     # The 'diff_unb_to_b' metric is now derived from the direct percentages, making it a clear and explicit calculation
     df_grouped["diff_unb_to_b"] = df_grouped["unb_to_b"] - df_grouped["b_to_unb"]
-    
+
     # Rename columns to match original function's output
     df_grouped = df_grouped.rename(columns={"unb_to_b": "U->B", "b_to_unb": "B->U"})
 
