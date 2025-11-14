@@ -5495,8 +5495,6 @@ def load_dataset(dataset_name, social_axis=None, filter_cols=None):
     fname_regex = f"{social_axis}.json" if social_axis else "*.json"
     for json_file in glob(os.path.join(dir_data, fname_regex)):
         df_curr = pd.read_json(json_file)
-        if filter_cols:
-            df_curr = df_curr[filter_cols]
         # Add social axis as the filename, if it doesn't exist
         if "social_axis" not in df_curr.columns:
             df_curr["social_axis"] = os.path.basename(json_file).split(".")[0]
@@ -5505,6 +5503,9 @@ def load_dataset(dataset_name, social_axis=None, filter_cols=None):
     # If BBQ, filter only for ambiguous context
     if dataset_name == "BBQ":
         df_accum = df_accum[df_accum["context_condition"] == "ambig"]
+    # Filter columns at the end
+    if filter_cols:
+        df_accum = df_accum[filter_cols]
     return df_accum
 
 
