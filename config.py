@@ -191,6 +191,23 @@ DATASET_TO_DIR = {
 
 
 ################################################################################
+#                            Causality Experiments                             #
+################################################################################
+# Save directory for causality experiments
+DIR_CAUSALITY = os.path.join(DIR_SAVE_DATA, "analysis", "causality")
+
+# Paths
+CAUSALITY_PATHS = {
+    # Responses for Qwen 2.5 0.5B RTN W4A16 model filtered for causality analysis
+    "initial_responses": os.path.join(DIR_CAUSALITY, "initial_filtered_responses.csv"),
+
+    # Training and test data for preference optimization
+    "train_set": os.path.join(DIR_CAUSALITY, "train.csv"),
+    "test_set": os.path.join(DIR_CAUSALITY, "test.csv"),
+}
+
+
+################################################################################
 #                                Online Models                                 #
 ################################################################################
 # Online Model API Keys
