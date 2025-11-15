@@ -9,6 +9,7 @@ import json
 import os
 import logging
 import random
+import shutil
 import sys
 
 # Non-standard libraries
@@ -138,7 +139,8 @@ def create_hub_save_path(model_path, q_method, q_bits):
 ################################################################################
 #                                Main Functions                                #
 ################################################################################
-def awq(model_path, save_to_hub=False, **quant_config):
+# TODO: Fix saving behavior with `save_dir`
+def awq(model_path, save_dir=".", save_to_hub=False, **quant_config):
     """
     Quantize model with AWQ.
 
@@ -147,6 +149,8 @@ def awq(model_path, save_to_hub=False, **quant_config):
     model_path : str
         Name of model in HuggingFace/locally
         (e.g., meta-llama/Meta-Llama-3-8B-Instruct)
+    save_dir : str
+        Directory to save quantized model to, by default "."
     save_to_hub : bool
         If True, save quantized model to HuggingFace Hub, by default False
     quant_config : **kwargs
@@ -199,14 +203,6 @@ Quantizing model `%s`
     # Save configuration to model
     model.model.config.quantization_config = quantization_config
 
-    # Save quantized model locally
-    model.save_quantized(repo_id)
-    tokenizer.save_pretrained(repo_id)
-
-    # Save quantization configuartion locally
-    with open(f"{repo_id}/quant_config.json", "w") as f:
-        json.dump(quant_config, f, indent=4)
-
     # Push to HuggingFace Hub
     if save_to_hub:
         LOGGER.info("Pushing quantized model to HuggingFace Hub `%s`...", hub_save_path)
@@ -226,14 +222,19 @@ Quantizing model `%s`
         )
 
         # 3. Save tokenizer to hub
-        tokenizer.save_pretrained(repo_id)
+        tokenizer.save_pretrained(hub_save_path)
 
         # NOTE: Following are not implemented in AutoAWQ
         model.push_to_hub(hub_save_path, commit_message=commit_message)
         tokenizer.push_to_hub(hub_save_path)
 
+        # Move to save directory
+        if save_dir != ".":
+            os.makedirs(save_dir, exist_ok=True)
+            shutil.move(hub_save_path, save_dir)
 
-def gptq(model_path, save_to_hub=False, **quant_config):
+
+def gptq(model_path, save_dir=".", save_to_hub=False, **quant_config):
     """
     Quantize model with GPTQ.
 
@@ -242,6 +243,8 @@ def gptq(model_path, save_to_hub=False, **quant_config):
     model_path : str
         Name of model in HuggingFace/locally
         (e.g., meta-llama/Meta-Llama-3-8B-Instruct)
+    save_dir : str
+        Directory to save quantized model to, by default "."
     save_to_hub : bool
         If True, save quantized model to HuggingFace Hub, by default False
     quant_config : **kwargs
@@ -289,6 +292,15 @@ Quantizing model `%s`
     quantizer = GPTQQuantizer(**curr_quant_config)
     q_model = quantizer.quantize_model(model, tokenizer)
 
+    # Save quantized model locally
+    q_model.save_pretrained(hub_save_path)
+    tokenizer.save_pretrained(hub_save_path)
+
+    # Move to save directory
+    if save_dir != ".":
+        os.makedirs(save_dir, exist_ok=True)
+        shutil.move(hub_save_path, save_dir)
+
     # Save to HF Hub
     if save_to_hub:
         LOGGER.info("Pushing quantized model to HuggingFace Hub `%s`...", hub_save_path)
@@ -303,6 +315,7 @@ Quantizing model `%s`
 
 def smooth_gptq(
         model_path,
+        save_dir=".",
         num_gpus=1,
         scheme="W4A16",
         num_samples=512,
@@ -319,6 +332,8 @@ def smooth_gptq(
     ----------
     model_path : str
         Name of model in HuggingFace/locally
+    save_dir : str
+        Directory to save quantized model to, by default "."
     num_gpus : int
         Number of GPUs
     scheme : str
@@ -424,9 +439,15 @@ Quantizing model `%s`
             commit_message="Push folder to HuggingFace Hub",
         )
 
+    # Move to save directory
+    if save_dir != ".":
+        os.makedirs(hub_save_path, exist_ok=True)
+        shutil.move(hub_save_path, save_dir)
+
 
 def smooth_rtn(
         model_path,
+        save_dir=".",
         smoothquant=False,
         scheme="W4A16",
         kv_scheme="KV16",
@@ -447,6 +468,8 @@ def smooth_rtn(
     ----------
     model_path : str
         Name of model in HuggingFace/locally
+    save_dir : str
+        Directory to save quantized model to, by default "."
     smoothquant : bool
         If True, use SmoothQuant
     scheme : str
@@ -568,6 +591,11 @@ Quantizing model `%s`
             folder_path=hub_save_path,
             commit_message="Push folder to HuggingFace Hub",
         )
+
+    # Move to save directory
+    if save_dir != ".":
+        os.makedirs(hub_save_path, exist_ok=True)
+        shutil.move(hub_save_path, save_dir)
 
 
 def main(model_path, q_method, scheme, num_gpus=1):
