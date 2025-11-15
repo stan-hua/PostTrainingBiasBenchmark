@@ -48,6 +48,9 @@ OUTPUT_DIR = config.CAUSALITY_PATHS["output_dir"]
 # Use Comet for logging
 USE_COMET_ML = True
 
+# Name of base LLM model to use
+DEFAULT_MODEL = 'Qwen/Qwen2.5-0.5B-Instruct'
+
 
 ################################################################################
 #                                   Classes                                    #
@@ -129,7 +132,7 @@ def get_default_config():
     """
     return {
         # Model
-        'model_name': 'Qwen/Qwen2.5-0.5B-Instruct',
+        'model_name': DEFAULT_MODEL,
 
         # Data
         'train_data_path': TRAIN_PATH,
@@ -145,7 +148,7 @@ def get_default_config():
         ],
 
         # Training
-        'num_train_epochs': 3,
+        'num_train_epochs': 5,
         'per_device_train_batch_size': 4,
         'gradient_accumulation_steps': 8,
         'learning_rate': 5e-5,
@@ -168,8 +171,8 @@ def get_default_config():
         # Logging & Saving
         'seed': 42,
         'logging_steps': 10,
-        'save_steps': 100,
-        'save_total_limit': 3,
+        'save_strategy': "epoch",
+        'save_total_limit': None,
         'report_to': "none",
 
         # Comet-specific (optional)
@@ -343,7 +346,7 @@ def create_output_path(base_output_dir, model_name, gradient_ascent):
     base_output_dir : str
         Base output directory.
     model_name : str
-        HuggingFace model identifier (e.g., 'Qwen/Qwen2.5-0.5B-Instruct').
+        HuggingFace model identifier.
     gradient_ascent : bool
         Whether gradient ascent is being used.
     
@@ -448,8 +451,7 @@ def train(config):
 
         # Logging & Saving
         logging_steps=config['logging_steps'],
-        save_strategy="steps",
-        save_steps=config['save_steps'],
+        save_strategy=config['save_strategy'],
         save_total_limit=config['save_total_limit'],
 
         # Misc
@@ -507,7 +509,7 @@ def train(config):
     return model, tokenizer
 
 
-def merge_and_save(lora_model_path, output_path, base_model_name='Qwen/Qwen2.5-0.5B-Instruct'):
+def merge_and_save(lora_model_path, output_path, base_model_name=DEFAULT_MODEL):
     """
     Merge LoRA weights into base model and save.
 
@@ -553,11 +555,11 @@ def merge_and_save(lora_model_path, output_path, base_model_name='Qwen/Qwen2.5-0
 def run_training(
     train_data=None,
     output_dir=None,
-    model_name='Qwen/Qwen2.5-0.5B-Instruct',
+    model_name=DEFAULT_MODEL,
     lora_r=16,
     lora_alpha=32,
     lora_dropout=0.05,
-    epochs=3,
+    epochs=5,
     batch_size=4,
     grad_accum=8,
     lr=5e-5,
@@ -662,10 +664,15 @@ def run_training(
             file_config = json.load(f)
         config.update(file_config)
 
-    # Create output path with model name and gradient suffix
+    # Set training path
     config["train_data_path"] = train_data or TRAIN_PATH
-    config["output_dir"] = output_dir or OUTPUT_DIR
-    config["output_dir"] = create_output_path(config["output_dir"], model_name, gradient_ascent)
+    
+    # Update output directory, and create subdirectory based on gradient mode
+    output_dir = output_dir or OUTPUT_DIR
+    subdir = "ga" if gradient_ascent else "gd"
+    output_dir = os.path.join(output_dir, subdir)
+    os.makedirs(output_dir, exist_ok=True)
+    config["output_dir"] = create_output_path(output_dir, model_name, gradient_ascent)
 
     # Override with command line arguments
     config.update({
@@ -709,7 +716,7 @@ def run_training(
 
     # Optionally merge
     if merge:
-        merged_path = f"{config['output_dir']}_merged"
+        merged_path = f"{config['output_dir']}-merged"
         logger.info(f"\nMerging LoRA weights to {merged_path}")
         merge_and_save(config['output_dir'], merged_path, config['model_name'])
         result['merged_path'] = merged_path
@@ -727,7 +734,7 @@ def run_training(
     return result
 
 
-def merge_existing_lora(lora_path, output_path, base_model='Qwen/Qwen2.5-0.5B-Instruct'):
+def merge_existing_lora(lora_path, output_path, base_model=DEFAULT_MODEL):
     """
     Merge existing LoRA weights.
 

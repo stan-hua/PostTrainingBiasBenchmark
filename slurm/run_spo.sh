@@ -25,23 +25,54 @@
 export TRANSFORMERS_NO_TORCHVISION=1
 pixi shell -e simpo
 
+# Set output directory
+DIR_OUTPUTS="data/save_data/analysis/causality/outputs"
 
 ################################################################################
 #                               Fine-Tune on BBQ                               #
 ################################################################################
 # Reduce uncertainty (standard gradient descent)
 pixi run -e simpo python -m scripts.causality.run_spo train \
-    --gradient_ascent=False \
-    --merge
+    --gradient_ascent=False
 
 # Increase uncertainty (gradient ascent)
 pixi run -e simpo python -m scripts.causality.run_spo train \
-    --gradient_ascent=True \
-    --merge
+    --gradient_ascent=True
+
+################################################################################
+#                            Merge LoRA checkpoints                            #
+################################################################################
+# For each gradient ascent/descent
+for grad_type in "ga" "gd"; do
+    # For each checkpoint
+    for ckpt_idx in "82" "164" "246" "328" "410"; do
+        DIR_CURR="$DIR_OUTPUTS/${grad_type}/qwen2.5-0.5b-instruct_${grad_type}"
+        LORA_PATH="$DIR_CURR/checkpoint-${ckpt_idx}"
+        OUTPUT_PATH="$DIR_CURR-checkpoint-${ckpt_idx}-merged"
+
+        # Merge LoRA adapters into Model
+        pixi run -e simpo python -m scripts.causality.run_spo merge \
+            --lora_path $LORA_PATH \
+            --output_path $OUTPUT_PATH
+    done
+done
+
 
 ################################################################################
 #                                Quantize Model                                #
 ################################################################################
-pixi run -e quantizer python -m scripts.quant.quantize_model \
-    smooth_rtn \
-    --model_path data/save_data/analysis/causality/outputs/qwen2.5-0.5b-instruct_ga_merged/ \
+# For each gradient ascent/descent
+for grad_type in "ga" "gd"; do
+    # For each checkpoint
+    for ckpt_idx in "82" "164" "246" "328" "410"; do
+        DIR_CURR="$DIR_OUTPUTS/${grad_type}"
+        DIR_MODEL="$DIR_CURR/qwen2.5-0.5b-instruct_${grad_type}-checkpoint-${ckpt_idx}-merged"
+        DIR_QUANTIZED="$DIR_CURR/rtn_w4_quantized/"
+
+        # Quantize model at each checkpoint
+        pixi run -e quantizer python -m scripts.quant.quantize_model \
+            rtn \
+            --model_path $DIR_MODEL \
+            --save_dir $DIR_QUANTIZED
+    done
+done
