@@ -5,39 +5,22 @@ Description: Fine-tune model using Simple Preference Optimization
 
 Usage:
 
-# Basic training
+# Reduce uncertainty (standard gradient descent)
 python train_simpo.py train \
-    --train_data=data/prepared/train_AB_reduce_uncertainty.json \
-    --output_dir=outputs/model1
-
-# Training with custom parameters
-python train_simpo.py train \
-    --train_data=data/prepared/train_AB_reduce_uncertainty.json \
-    --output_dir=outputs/model1 \
-    --lora_r=32 \
-    --epochs=5 \
-    --batch_size=8 \
-    --lr=1e-4 \
+    --gradient_ascent=False \
     --merge
 
-# Training with config file
+# Increase uncertainty (gradient ascent)
 python train_simpo.py train \
-    --train_data=data/prepared/train_AB_reduce_uncertainty.json \
-    --output_dir=outputs/model1 \
-    --config_file=configs/experiment1.json \
+    --gradient_ascent=True \
     --merge
-
-# Merge existing LoRA weights
-python train_simpo.py merge \
-    --lora_path=outputs/model1 \
-    --output_path=outputs/model1_merged
 """
 
 # Standard libraries
 import json
 import logging
 import os
-from typing import Dict, Any, Optional
+from typing import Tuple, Dict, Any, Optional
 
 # Non-standard libraries
 import fire
@@ -61,6 +44,9 @@ logger = logging.getLogger(__name__)
 # Default training dataset
 TRAIN_PATH = config.CAUSALITY_PATHS["train_set"]
 OUTPUT_DIR = config.CAUSALITY_PATHS["output_dir"]
+
+# Use Comet for logging
+USE_COMET_ML = True
 
 
 ################################################################################
@@ -348,6 +334,44 @@ def setup_comet_logging(config):
     return config
 
 
+def create_output_path(base_output_dir, model_name, gradient_ascent):
+    """
+    Create output path with model name and gradient ascent/descent suffix.
+    
+    Parameters
+    ----------
+    base_output_dir : str
+        Base output directory.
+    model_name : str
+        HuggingFace model identifier (e.g., 'Qwen/Qwen2.5-0.5B-Instruct').
+    gradient_ascent : bool
+        Whether gradient ascent is being used.
+    
+    Returns
+    -------
+    str
+        Full output path with model name and suffix.
+    
+    Examples
+    --------
+    >>> create_output_path('outputs', 'Qwen/Qwen2.5-0.5B-Instruct', False)
+    'outputs/qwen2.5-0.5b-instruct_gd'
+    
+    >>> create_output_path('outputs', 'Qwen/Qwen2.5-0.5B-Instruct', True)
+    'outputs/qwen2.5-0.5b-instruct_ga'
+    """
+    # Extract model name (last part after /)
+    model_short_name = model_name.split('/')[-1].lower()
+    
+    # Create suffix based on gradient ascent/descent
+    suffix = 'ga' if gradient_ascent else 'gd'
+    
+    # Combine: base_dir/model_name_suffix
+    output_path = os.path.join(base_output_dir, f"{model_short_name}_{suffix}")
+    
+    return output_path
+
+
 ################################################################################
 #                                Main Functions                                #
 ################################################################################
@@ -439,7 +463,7 @@ def train(config):
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         gradient_ascent=config['gradient_ascent'],
     )
 
@@ -527,8 +551,8 @@ def merge_and_save(lora_model_path, output_path, base_model_name='Qwen/Qwen2.5-0
 
 
 def run_training(
-    train_data,
-    output_dir,
+    train_data=None,
+    output_dir=None,
     model_name='Qwen/Qwen2.5-0.5B-Instruct',
     lora_r=16,
     lora_alpha=32,
@@ -538,13 +562,12 @@ def run_training(
     grad_accum=8,
     lr=5e-5,
     beta=2.0,
-    simpo_gamma=1.0,  # CHANGED: Use simpo_gamma instead of gamma_beta_ratio
+    simpo_gamma=1.0,
     gradient_ascent=False,
     seed=42,
     merge=False,
     config_file=None,
-    # Comet-specific arguments
-    comet=False,
+    comet=USE_COMET_ML,
     comet_project=None,
     comet_experiment=None,
     comet_tags=None,
@@ -555,7 +578,7 @@ def run_training(
     Parameters
     ----------
     train_data : str
-        Path to training data JSON file.
+        Path to training data CSV file.
     output_dir : str
         Output directory for trained model.
     model_name : str, optional
@@ -639,10 +662,13 @@ def run_training(
             file_config = json.load(f)
         config.update(file_config)
 
+    # Create output path with model name and gradient suffix
+    config["train_data_path"] = train_data or TRAIN_PATH
+    config["output_dir"] = output_dir or OUTPUT_DIR
+    config["output_dir"] = create_output_path(config["output_dir"], model_name, gradient_ascent)
+
     # Override with command line arguments
     config.update({
-        'train_data_path': train_data,
-        'output_dir': output_dir,
         'model_name': model_name,
         'lora_r': lora_r,
         'lora_alpha': lora_alpha,

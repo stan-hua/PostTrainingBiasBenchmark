@@ -114,3 +114,8 @@ def create_po_dataset():
     df_test = df_data[df_data["split"] == "test"]
     df_train.to_csv(config.CAUSALITY_PATHS["train_set"], index=False)
     df_test.to_csv(config.CAUSALITY_PATHS["test_set"], index=False)
+
+
+if __name__ == "__main__":
+    from fire import Fire
+    Fire()
