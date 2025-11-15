@@ -201,6 +201,9 @@ CAUSALITY_PATHS = {
     # Responses for Qwen 2.5 0.5B RTN W4A16 model filtered for causality analysis
     "initial_responses": os.path.join(DIR_CAUSALITY, "initial_filtered_responses.csv"),
 
+    # Output causality directory
+    "output_dir": os.path.join(DIR_CAUSALITY, "outputs"),
+
     # Training and test data for preference optimization
     "train_set": os.path.join(DIR_CAUSALITY, "train.csv"),
     "test_set": os.path.join(DIR_CAUSALITY, "test.csv"),
