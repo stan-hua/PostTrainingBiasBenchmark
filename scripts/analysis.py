@@ -596,7 +596,8 @@ def cache_closed_dataset_metrics(dataset_name="StereoSet-Intersentence", overwri
         cols = [
             "idx", "model_base", "model_modified", "dataset", "social_axis",
             "q_method_full", "Flipped", "Bias_Flipped", "is_biased_base", "is_biased_modified",
-            "num_choices", "res_probs_entropy_base", "res_probs_entropy_modified",
+            "num_choices", "res_probs_base", "res_probs_modified",
+            "res_probs_entropy_base", "res_probs_entropy_modified",
             "res_prob_chosen_base", "res_prob_chosen_base_modified_diff", "res_prob_biased_base_modified_diff",
             "res_prob_chosen_idx_base", "res_prob_chosen_idx_modified",
         ]
@@ -925,7 +926,8 @@ def load_closed_dataset_entropy_changes(dataset_name):
             df_data, dataset_name,
             filter_cols=[
                 "idx", "context_condition", "prompt",
-                "stereotyped_groups", "choices", "target_label",
+                "stereotyped_groups", "choices",
+                "target_label", "unknown_label",
             ],
         )
         df_data = df_data[df_data["context_condition"] == "ambig"]
