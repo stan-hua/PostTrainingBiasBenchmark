@@ -34,7 +34,7 @@ def get_initial_response_data(overwrite=False):
     response flipping.
     """
     # Early return, if data already exists
-    if os.path.exists(config.CAUSALITY_PATHS["initial_responses"]):
+    if not overwrite and os.path.exists(config.CAUSALITY_PATHS["initial_responses"]):
         return pd.read_csv(config.CAUSALITY_PATHS["initial_responses"])
 
     # Import custom libraries
@@ -45,32 +45,11 @@ def get_initial_response_data(overwrite=False):
     model = "qwen2.5-0.5b-instruct-lc-rtn-w4a16"
     df_changes = df_changes[df_changes["model_modified"] == model]
 
-    # Identify response flipping by social group
-    num_sizes = df_changes.groupby("social_group").apply(len)
-    prop_flipped = df_changes.groupby("social_group")["Flipped"].mean()
-
-    # Combine into a single DataFrame
-    df_summary = pd.DataFrame({
-        "num_sizes": num_sizes,
-        "prop_flipped": prop_flipped
-    }).reset_index()
-
-    # Filter for social groups with at least 300 samples
-    df_summary = df_summary[df_summary["num_sizes"] >= 300]
-
-    # Get top 3 and bottom 3 social groups by prop_flipped
-    df_summary = df_summary.sort_values(by="prop_flipped", ascending=False)
-    top_3 = df_summary.head(3)["social_group"].tolist()
-    bottom_3 = df_summary.tail(3)["social_group"].tolist()
-
-    # Get data for top 3 and bottom 3 social groups
-    df_subset = df_changes[df_changes["social_group"].isin(top_3 + bottom_3)]
-
     # Save data subset to CSV
     os.makedirs(os.path.dirname(config.CAUSALITY_PATHS["initial_responses"]), exist_ok=True)
-    df_subset.to_csv(config.CAUSALITY_PATHS["initial_responses"], index=False)
+    df_changes.to_csv(config.CAUSALITY_PATHS["initial_responses"], index=False)
 
-    return df_subset
+    return df_changes
 
 
 def create_po_dataset():
@@ -92,8 +71,28 @@ def create_po_dataset():
         axis=1,
     )
 
+    ############################################################################
+    #                 Create Train/Test from Social Groups                     #
+    ############################################################################
+    # Combine into a single DataFrame
+    df_summary = pd.DataFrame({
+        "num_sizes": df_data.groupby("social_group").size(),
+        "prop_flipped": df_data.groupby("social_group")["Flipped"].mean()
+    }).reset_index()
+
+    # Get top 3 and bottom 3 social groups by prop_flipped
+    # NOTE: Social groups must have at least 300 samples
+    df_summary = df_summary[df_summary["num_sizes"] >= 300]
+    df_summary = df_summary.sort_values(by="prop_flipped", ascending=False)
+    top_3 = df_summary.head(3)["social_group"].tolist()
+    bottom_3 = df_summary.tail(3)["social_group"].tolist()
+    filter_groups = top_3 + bottom_3
+
+    # Assign all data as unseen test set
+    df_data["split"] = "unseen_test"
+
     # Split prompts 50-50 for each social group into train and test sets
-    for social_group in df_data["social_group"].unique():
+    for social_group in filter_groups:
         df_group = df_data[df_data["social_group"] == social_group]
         df_train = df_group.sample(frac=0.5, random_state=42)
         df_test = df_group.drop(df_train.index)
@@ -112,8 +111,10 @@ def create_po_dataset():
     # Store training and test set separately
     df_train = df_data[df_data["split"] == "train"]
     df_test = df_data[df_data["split"] == "test"]
+    df_unseen_test = df_data[df_data["split"] == "unseen_test"]
     df_train.to_csv(config.CAUSALITY_PATHS["train_set"], index=False)
     df_test.to_csv(config.CAUSALITY_PATHS["test_set"], index=False)
+    df_unseen_test.to_csv(config.CAUSALITY_PATHS["unseen_test_set"], index=False)
 
 
 if __name__ == "__main__":
