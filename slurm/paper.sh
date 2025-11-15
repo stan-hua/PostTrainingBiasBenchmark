@@ -1,26 +1,29 @@
 #!/bin/bash -l
 #SBATCH --job-name=paper                    # Job name
 #SBATCH --account=fc_chenlab
-#SBATCH --partition=savio2
+#SBATCH --partition=savio4_htc
 #SBATCH --qos=savio_normal
-#SBATCH --time=08:00:00
+#SBATCH --time=02:00:00
 #SBATCH --nodes=1                         # Number of nodes
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=24                 # Number of CPU cores per TASK
+#SBATCH --cpus-per-task=32                 # Number of CPU cores per TASK
 
 # --gres=gpu:NVIDIA_L40S:1
-#SBATCH --mem=32GB
+#SBATCH --mem=16GB
 #SBATCH -o slurm/logs/slurm-paper-%j.out
 
 # If you want to do it in the terminal,
 # salloc --nodes=1 --cpus-per-task=8 --mem=16G
-# srun (command)
+# (command)
 
 ################################################################################
 #                                 Environment                                  #
 ################################################################################
 # Load any necessary modules or activate your virtual environment here
-# micromamba activate fairbench
+# Option 1. Using conda
+# conda activate fairbench
+# (Recommended) Option 2. Pixi
+pixi shell -e analysis
 
 # Configures vLLM to avoid multiprocessing issue
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
@@ -56,13 +59,12 @@ CLOSED_DATASET_NAMES=(
 )
 
 for DATASET_NAME in "${CLOSED_DATASET_NAMES[@]}"; do
-    pixi run -e analysis \
-        python -m scripts.analysis cache_closed_dataset_metrics $DATASET_NAME;
+    python -m scripts.analysis cache_closed_dataset_metrics $DATASET_NAME;
 done
 
 
 # DiscrimEval
-# srun python -m scripts.analysis analyze_de
+# python -m scripts.analysis analyze_de
 
 ################################################################################
 #                            Generative Evaluation                             #
@@ -83,8 +85,7 @@ OPEN_DATASET_NAMES=(
 )
 
 for DATASET_NAME in "${OPEN_DATASET_NAMES[@]}"; do
-    pixi run -e analysis \
-        python -m scripts.analysis cache_open_dataset_tests $DATASET_NAME;
+    python -m scripts.analysis cache_open_dataset_tests $DATASET_NAME;
 done
 
 
@@ -92,33 +93,36 @@ done
 ################################################################################
 #                                   Results                                    #
 ################################################################################
-# # Figure 1.
-# srun python -m scripts.analysis change_in_agg_metrics
-
-# Supp Table 1.
-# srun python -m scripts.analysis change_in_agg_metrics_int8
-
-# # # Table 1.
-# srun python -m scripts.analysis change_in_response_flipping
-
-# # # Figure 2
-# srun python -m scripts.analysis change_in_uncertainty
+# # Figure 2.
+# python -m scripts.analysis change_in_uncertainty
 
 # # # Figure 3
-# srun python -m scripts.analysis factors_related_to_response_flipping
+python -m scripts.analysis change_in_agg_metrics
 
-# # Figure 3c
-# srun python -m scripts.analysis change_in_response_by_social_group_bbq
+# # # Figure 4a&b
+python -m scripts.analysis factors_related_to_behavior_flipping
 
-# # Supp Table 2.
-# srun python -m scripts.analysis changes_in_model_selection
+# # Figure 4c
+python -m scripts.analysis reranking_changes_due_to_quantization
 
-# # Figure 4.
-# srun python -m scripts.analysis change_in_text_patterns
+# # Figure 5
+python -m scripts.analysis asymmetric_impact_questions
+python -m scripts.analysis asymmetric_impact_bbq
+python -m scripts.analysis asymmetric_impact_group_by_dataset
 
-# Figure 5.
-# srun python -m scripts.analysis change_in_text_bias
+# # Supp Figure.
+# python -m scripts.analysis change_in_text_patterns
+
+# # Supp Figure.
+# python -m scripts.analysis change_in_text_bias
+
+
+# # Supp Table 1.
+# python -m scripts.analysis change_in_agg_metrics_int8
+
+# # Supp Table.
+# python -m scripts.analysis change_in_response_flipping
 
 # # Supp. Table.
-# srun python -m scripts.analysis change_in_text_bias_fmt10k
-# srun python -m scripts.analysis change_in_text_bias_biaslens
+# python -m scripts.analysis change_in_text_bias_fmt10k
+# python -m scripts.analysis change_in_text_bias_biaslens
