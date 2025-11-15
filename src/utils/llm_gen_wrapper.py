@@ -54,8 +54,9 @@ DEFAULT_CONFIG = {
     "enforce_eager": False,
     "debug": False,
     # Generation parameters
-    "use_chat_template": False,
-    "temperature": 0,
+    "use_chat_template": True,
+    "temperature": 1,
+    "top_k": 1,
     "repetition_penalty": 1.0,
     "max_model_len": 4096,      # Maximum input size
     "max_new_tokens": 512,      # Maximum output size
