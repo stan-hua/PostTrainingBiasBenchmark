@@ -1,7 +1,7 @@
 slurm/logs/*
 save_data
 data/save_data
-
+sparse_logs/
 *.pyc
 
 .envrc

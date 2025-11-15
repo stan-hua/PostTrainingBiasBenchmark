@@ -56,8 +56,15 @@ extra-index-urls = [
 ]
 index-strategy = "unsafe-best-match"
 
-[feature.manual_quant.pypi-dependencies]
+[feature.quantizer.pypi-dependencies]
 llmcompressor = "*"
+
+[feature.simpo.pypi-dependencies]
+datasets = "*"
+peft = "*"
+trl = "*"
+comet-ml = "*"
+
 
 [feature.cuda.dependencies]
 cuda-version = "12.*"
@@ -68,4 +75,5 @@ cuda = "12.0"
 [environments]
 analysis = { features = ["analysis", "quant"], no-default-feature = false }
 vllm = { features = ["vllm", "quant", "cuda"], no-default-feature = false }
-quantizer = { features = ["manual_quant", "vllm", "quant", "cuda"], no-default-feature = false }
+quantizer = { features = ["quantizer", "vllm", "quant", "cuda"], no-default-feature = false }
+simpo = { features = ["simpo", "quant", "vllm", "cuda"], no-default-feature = false }
