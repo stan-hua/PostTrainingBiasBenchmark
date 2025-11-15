@@ -138,7 +138,7 @@ def create_hub_save_path(model_path, q_method, q_bits):
 ################################################################################
 #                                Main Functions                                #
 ################################################################################
-def awq(model_path, **quant_config):
+def awq(model_path, save_to_hub=False, **quant_config):
     """
     Quantize model with AWQ.
 
@@ -147,6 +147,8 @@ def awq(model_path, **quant_config):
     model_path : str
         Name of model in HuggingFace/locally
         (e.g., meta-llama/Meta-Llama-3-8B-Instruct)
+    save_to_hub : bool
+        If True, save quantized model to HuggingFace Hub, by default False
     quant_config : **kwargs
         Quantization configuration parameters
         (e.g., zero_point, q_group_size, w_bit, version)
@@ -206,31 +208,32 @@ Quantizing model `%s`
         json.dump(quant_config, f, indent=4)
 
     # Push to HuggingFace Hub
-    LOGGER.info("Pushing quantized model to HuggingFace Hub `%s`...", hub_save_path)
-    commit_message = f"AWQ model for {model_path}: {quant_config}"
+    if save_to_hub:
+        LOGGER.info("Pushing quantized model to HuggingFace Hub `%s`...", hub_save_path)
+        commit_message = f"AWQ model for {model_path}: {quant_config}"
 
-    #  1. Create folder
-    HF_API.create_repo(
-        repo_id=repo_id,
-        repo_type="model",
-        exist_ok=True,
-    )
-    # 2. Upload quantized model
-    HF_API.upload_folder(
-        repo_id=repo_id,
-        folder_path=repo_id,
-        commit_message=commit_message,
-    )
+        #  1. Create folder
+        HF_API.create_repo(
+            repo_id=repo_id,
+            repo_type="model",
+            exist_ok=True,
+        )
+        # 2. Upload quantized model
+        HF_API.upload_folder(
+            repo_id=repo_id,
+            folder_path=repo_id,
+            commit_message=commit_message,
+        )
 
-    # 3. Save tokenizer to hub
-    tokenizer.save_pretrained(repo_id)
+        # 3. Save tokenizer to hub
+        tokenizer.save_pretrained(repo_id)
 
-    # NOTE: Following are not implemented in AutoAWQ
-    model.push_to_hub(hub_save_path, commit_message=commit_message)
-    tokenizer.push_to_hub(hub_save_path)
+        # NOTE: Following are not implemented in AutoAWQ
+        model.push_to_hub(hub_save_path, commit_message=commit_message)
+        tokenizer.push_to_hub(hub_save_path)
 
 
-def gptq(model_path, **quant_config):
+def gptq(model_path, save_to_hub=False, **quant_config):
     """
     Quantize model with GPTQ.
 
@@ -239,6 +242,8 @@ def gptq(model_path, **quant_config):
     model_path : str
         Name of model in HuggingFace/locally
         (e.g., meta-llama/Meta-Llama-3-8B-Instruct)
+    save_to_hub : bool
+        If True, save quantized model to HuggingFace Hub, by default False
     quant_config : **kwargs
         Quantization configuration parameters
         (e.g., bits, group_size, desc_act)
@@ -285,24 +290,15 @@ Quantizing model `%s`
     q_model = quantizer.quantize_model(model, tokenizer)
 
     # Save to HF Hub
-    LOGGER.info("Pushing quantized model to HuggingFace Hub `%s`...", hub_save_path)
-    commit_message = f"GPTQ model for {model_path}: {quant_config}"
-    q_model.push_to_hub(
-        hub_save_path,
-        commit_message=commit_message,
-        use_safetensors=True,
-    )
-    tokenizer.push_to_hub(hub_save_path)
-
-    # 4. Run perplexity on Wikitext
-    ppl = Perplexity(model, tokenizer)
-    try:
-        LOGGER.info(f"Running perplexity on Wikitext... ({hub_save_path})")
-        result = ppl.run(1024, 1024)
-        LOGGER.info(f"Wiki-Text Perplexity: {result:.4f}")
-    except:
-        LOGGER.info(f"FAILED!")
-        raise
+    if save_to_hub:
+        LOGGER.info("Pushing quantized model to HuggingFace Hub `%s`...", hub_save_path)
+        commit_message = f"GPTQ model for {model_path}: {quant_config}"
+        q_model.push_to_hub(
+            hub_save_path,
+            commit_message=commit_message,
+            use_safetensors=True,
+        )
+        tokenizer.push_to_hub(hub_save_path)
 
 
 def smooth_gptq(
@@ -314,6 +310,7 @@ def smooth_gptq(
         damp_factor=0.01,
         actorder=True,
         smoothing_strength=0.8,
+        save_to_hub=False,
     ):
     """
     Quantize model with SmoothQuant and GPTQ.
@@ -334,6 +331,8 @@ def smooth_gptq(
         Dampening factor
     smoothing_strength : float
         Smoothing strength
+    save_to_hub : bool, optional
+        If True, save quantized model to HuggingFace Hub, by default False
     """
     LOGGER.info("""
 ################################################################################
@@ -411,18 +410,19 @@ Quantizing model `%s`
     tokenizer.save_pretrained(hub_save_path, push_to_hub=False)
 
     # Now, push local folder to Hub
-    #  1. Create folder
-    HF_API.create_repo(
-        repo_id=repo_id,
-        repo_type="model",
-        exist_ok=True,
-    )
-    # 2. Upload quantized model
-    HF_API.upload_folder(
-        repo_id=repo_id,
-        folder_path=hub_save_path,
-        commit_message="Push folder to HuggingFace Hub",
-    )
+    if save_to_hub:
+        #  1. Create folder
+        HF_API.create_repo(
+            repo_id=repo_id,
+            repo_type="model",
+            exist_ok=True,
+        )
+        # 2. Upload quantized model
+        HF_API.upload_folder(
+            repo_id=repo_id,
+            folder_path=hub_save_path,
+            commit_message="Push folder to HuggingFace Hub",
+        )
 
 
 def smooth_rtn(
@@ -433,6 +433,7 @@ def smooth_rtn(
         smoothing_strength=0.8,
         num_samples=512,
         max_seq_len=6144,
+        save_to_hub=False,
     ):
     """
     Quantize model with Round-to-Nearest and if specified, SmoothQuant.
@@ -458,6 +459,8 @@ def smooth_rtn(
         For SmoothQuant, number of calibration samples
     max_seq_len : int
         For SmoothQuant, maximum sequence length
+    save_to_hub : bool, optional
+        If True, save quantized model to HuggingFace Hub, by default False
     """
     LOGGER.info("""
 ################################################################################
@@ -552,18 +555,19 @@ Quantizing model `%s`
     tokenizer.save_pretrained(hub_save_path, push_to_hub=False)
 
     # Now, push local folder to Hub
-    #  1. Create folder
-    HF_API.create_repo(
-        repo_id=repo_id,
-        repo_type="model",
-        exist_ok=True,
-    )
-    # 2. Upload quantized model
-    HF_API.upload_folder(
-        repo_id=repo_id,
-        folder_path=hub_save_path,
-        commit_message="Push folder to HuggingFace Hub",
-    )
+    if save_to_hub:
+        #  1. Create folder
+        HF_API.create_repo(
+            repo_id=repo_id,
+            repo_type="model",
+            exist_ok=True,
+        )
+        # 2. Upload quantized model
+        HF_API.upload_folder(
+            repo_id=repo_id,
+            folder_path=hub_save_path,
+            commit_message="Push folder to HuggingFace Hub",
+        )
 
 
 def main(model_path, q_method, scheme, num_gpus=1):
