@@ -207,6 +207,7 @@ CAUSALITY_PATHS = {
     # Training and test data for preference optimization
     "train_set": os.path.join(DIR_CAUSALITY, "train.csv"),
     "test_set": os.path.join(DIR_CAUSALITY, "test.csv"),
+    "unseen_test_set": os.path.join(DIR_CAUSALITY, "unseen_test.csv"),
 }
 
 
