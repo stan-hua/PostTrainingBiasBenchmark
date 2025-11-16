@@ -633,6 +633,7 @@ MODEL_INFO = {
 ################################################################################
 # Create model shorthands
 causal_model_mapping = {}
+base_models = []
 base_model = "qwen2.5-0.5b-instruct"
 for grad_type in ["_ga", "_gd"]:
     for epoch_idx, ckpt_idx in enumerate(["84", "168", "252", "336", "420"]):
@@ -640,8 +641,13 @@ for grad_type in ["_ga", "_gd"]:
             key = f"{base_model}{grad_type}-checkpoint-{ckpt_idx}-merged{quant_suffix}"
             val = f"{base_model}{grad_type}-epoch_{epoch_idx+1}{quant_suffix.lower()}"
             causal_model_mapping[key] = val
+            # Record base models
+            if quant_suffix == "":
+                base_models.append(val)
 MODEL_INFO["model_path_to_name"].update(causal_model_mapping)
-del causal_model_mapping, base_model, key, val
+MODEL_INFO["model_group"].extend(base_models)
+del causal_model_mapping, base_models, base_model
+del grad_type, epoch_idx, ckpt_idx, key, val
 
 
 ################################################################################

@@ -120,25 +120,25 @@ def evaluate_flipping(split, gradient_ascent=False, overwrite=False):
     """
     infix = "ga" if gradient_ascent else "gd"
 
-    # Get all predictions
-    save_path_regex = os.path.join(
-        config.CAUSALITY_PATHS["evaluations_dir"], f"*_{infix}_*",
-        f"{split}_evaluation.json",
-    )
-
     # Create save path
-    save_path = os.path.join(save_dir, f"{split}_evaluation.json")
+    save_dir = config.CAUSALITY_PATHS["results_dir"]
     os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, f"{infix}-{split}_evaluation.csv")
 
     # Early return, if evaluation already exists
     if not overwrite and os.path.exists(save_path):
-        print(f"Evaluation already exists at {save_path}. Skipping evaluation.")
-        with open(save_path, "r") as f:
-            return json.load(f)
+        print(f"Evaluation already exists at `{save_path}`! Skipping evaluation...")
+        return pd.read_csv(save_path)
 
-    # Load predictions
-    pred_path = os.path.join(config.CAUSALITY_PATHS["predictions_dir"], model_name, f"{split}_predictions.csv")
-    df_preds = pd.read_csv(pred_path)
+    # Get all predictions
+    save_path_regex = os.path.join(
+        config.CAUSALITY_PATHS["evaluations_dir"], f"*_{infix}_*",
+        f"{split}_predictions.csv",
+    )
+    accum_preds = []
+    for pred_path in glob(save_path_regex):
+        # Load predictions
+        df_preds = pd.read_csv(os.path.join(pred_path))
 
     # Load ground truth data
     df_data, _ = load_data(split)
@@ -160,6 +160,34 @@ def evaluate_flipping(split, gradient_ascent=False, overwrite=False):
         json.dump(eval_results, f, indent=4)
 
     return eval_results
+
+
+def get_base_model(model_name):
+    """
+    Get name of model pre-quantization
+
+    Parameters
+    ----------
+    model_name : str
+        Full model name
+
+    Returns
+    -------
+    str
+        Base model name
+    """
+    all_base_models = config.MODEL_INFO["model_group"]
+    instruct_models = [m for m in all_base_models if "instruct" in m]
+    non_instruct_models = [m for m in all_base_models if "instruct" not in m]
+
+    # Find model among instruct models first then base
+    # NOTE: Choose longest matching base model name
+    curr_base_model = None
+    for base_model in instruct_models + non_instruct_models:
+        if base_model in model_name (and curr_base_model is None or len(base_model) > len(curr_base_model)):
+            curr_base_model = base_model
+
+    return curr_base_model
 
 
 

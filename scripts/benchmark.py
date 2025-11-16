@@ -442,6 +442,7 @@ def extract_model_metadata_from_name(model_name):
             - `param_size`: The parameter size of the model (in B)
     """
     accum_metadata = {}
+
     # 1. Get the number of bits for weights
     regexes = [r"(\d)bit", r"w(\d)a\d*"]
     accum_metadata["w_bits"] = 16
@@ -450,11 +451,13 @@ def extract_model_metadata_from_name(model_name):
         if match_obj:
             accum_metadata["w_bits"] = int(match_obj.group(1))
             break
+
     # 2. Get the number of bits for activations
     accum_metadata["a_bits"] = 16
     match_obj = re.search(r"w(\d)a(\d*)", model_name)
     if match_obj:
         accum_metadata["a_bits"] = int(match_obj.group(2))
+
     # 3. Get quantization strategy
     accum_metadata["q_method"] = None
     for q_method in ["rtn", "gptq", "awq", "aqlm"]:
@@ -472,24 +475,30 @@ def extract_model_metadata_from_name(model_name):
     if accum_metadata["q_method"]:
         accum_metadata["q_method_bits"] = "W" + str(accum_metadata["w_bits"]) + "A" + str(accum_metadata["a_bits"])
         accum_metadata["q_method_full"] = accum_metadata["q_method"].upper() + " " + accum_metadata["q_method_bits"] + (" + SQ" if accum_metadata["smoothquant"] else "")
+
     # 4. Check if the model is an instruct vs. non-instruct model
     accum_metadata["instruct_tuned"] = "instruct" in model_name
+
     # 5. Get parameter size (in B)
     match_obj = re.search(r"-(\d*\.?\d*)b-?", model_name)
     assert match_obj, f"[Extract Model Metadata] Failed to extract param_size from model name: {model_name}"
     accum_metadata["param_size"] = float(match_obj.group(1))
     accum_metadata["Model Size (GB)"] = accum_metadata["param_size"] * accum_metadata["w_bits"] / 8
+
     # 6. Get base model
     all_base_models = config.MODEL_INFO["model_group"]
     instruct_models = [m for m in all_base_models if "instruct" in m]
     non_instruct_models = [m for m in all_base_models if "instruct" not in m]
     accum_metadata["base_model"] = None
+
     # Find model among instruct models first then base
+    # NOTE: Choose longest matching base model name
+    curr_base_model = None
     for base_model in instruct_models + non_instruct_models:
-        if base_model in model_name:
-            accum_metadata["base_model"] = base_model
-            break
-    assert accum_metadata["base_model"] is not None, f"[Extract Model Metadata] Failed to find base model for: {model_name}!"
+        if base_model in model_name (and curr_base_model is None or len(base_model) > len(curr_base_model)):
+            accum_metadata["base_model"] = curr_base_model = base_model
+    assert curr_base_model is not None, f"[Extract Model Metadata] Failed to find base model for: {model_name}!"
+
     # Get model family
     accum_metadata["model_family"] = accum_metadata["base_model"].split("-")[0]
     return accum_metadata
