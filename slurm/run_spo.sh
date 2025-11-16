@@ -41,7 +41,7 @@ BASE_MODEL="Qwen/Qwen2.5-0.5B-Instruct"
 # pixi run -e simpo python -m scripts.causality.run_spo train \
 #     --gradient_ascent=False
 
-# # Increase uncertainty (gradient ascent)
+# Increase uncertainty (gradient ascent)
 # pixi run -e simpo python -m scripts.causality.run_spo train \
 #     --gradient_ascent=True
 
@@ -67,11 +67,11 @@ BASE_MODEL="Qwen/Qwen2.5-0.5B-Instruct"
 ################################################################################
 #                                Quantize Model                                #
 ################################################################################
-# Quantize original model
-pixi run -e quantizer python -m scripts.quant.quantize_model \
-    rtn \
-    --model_path $BASE_MODEL \
-    --save_dir $DIR_OUTPUT_MODELS
+# # Quantize original model
+# pixi run -e quantizer python -m scripts.quant.quantize_model \
+#     rtn \
+#     --model_path $BASE_MODEL \
+#     --save_dir $DIR_OUTPUT_MODELS
 
 # # For each gradient ascent/descent
 # for grad_type in "gd" "ga"; do
@@ -102,8 +102,10 @@ for split in "train" "test" "unseen_test"; do
         --split $split
 
     # Quantized original model
+    # NOTE: Quantized model is stored on HuggingFace.
+    #       To use local model, change HF_DATA_USERNAME to DIR_OUTPUT_MODELS
     pixi run -e vllm python -m scripts.causality.evaluate infer \
-        --model_path_or_name $DIR_OUTPUT_MODELS/Qwen2.5-0.5B-Instruct-LC-RTN-W4A16 \
+        --model_path_or_name $HF_DATA_USERNAME/Qwen2.5-0.5B-Instruct-LC-RTN-W4A16 \
         --split $split
 done
 

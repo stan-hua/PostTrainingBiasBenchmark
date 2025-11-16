@@ -84,39 +84,76 @@ class CPOGradientAscentTrainer(CPOTrainer):
             logger.info("Training will MAXIMIZE loss (increase uncertainty)")
             logger.info("=" * 60)
 
+
     def cpo_loss(
         self,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """
-        Compute CPO/SimPO loss with optional gradient ascent.
+        If performing "gradient ascent", maximize binary entropy to create
+        uniform distribution over responses.
         
+        At maximum entropy: log p(chosen) ≈ log p(rejected)
+
         Parameters
         ----------
         policy_chosen_logps : torch.FloatTensor
-            Log probabilities of chosen responses under policy model.
-            Shape: (batch_size,)
+            Average log probabilities of chosen sequences. Shape: (batch_size,)
         policy_rejected_logps : torch.FloatTensor
-            Log probabilities of rejected responses under policy model.
-            Shape: (batch_size,)
-        
+            Average log probabilities of rejected sequences. Shape: (batch_size,)
+
         Returns
         -------
         tuple of (torch.FloatTensor, torch.FloatTensor, torch.FloatTensor)
             Tuple containing (losses, chosen_rewards, rejected_rewards).
-            Losses are negated if gradient_ascent=True.
+            All tensors have shape (batch_size,).
         """
-        # Compute standard CPO/SimPO loss using parent method
-        losses, chosen_rewards, rejected_rewards = super().cpo_loss(
-            policy_chosen_logps,
-            policy_rejected_logps,
-        )
-        
-        # Negate loss for gradient ascent
-        if self.gradient_ascent:
-            losses = -losses
-        
+        if not self.gradient_ascent:
+            # Use standard SimPO/CPO loss
+            return super().cpo_loss(policy_chosen_logps, policy_rejected_logps)
+
+        # MAXIMUM ENTROPY MODE
+        # Goal: Make P(chosen | {chosen, rejected}) = 0.5
+
+        # Move to correct device first
+        policy_chosen_logps = policy_chosen_logps.to(self.accelerator.device)
+        policy_rejected_logps = policy_rejected_logps.to(self.accelerator.device)
+
+        # Compute log probabilities of binary choice using logsumexp
+        # This is numerically stable way to compute:
+        # log P(chosen) = log [exp(logp_c) / (exp(logp_c) + exp(logp_r))]
+        #               = logp_c - log(exp(logp_c) + exp(logp_r))
+        #               = logp_c - logsumexp([logp_c, logp_r])
+
+        logsumexp = torch.logsumexp(
+            torch.stack([policy_chosen_logps, policy_rejected_logps], dim=0),
+            dim=0
+        )  # Shape: (batch_size,)
+
+        log_p_chosen = policy_chosen_logps - logsumexp
+        log_p_rejected = policy_rejected_logps - logsumexp
+
+        # Convert to probabilities
+        p_chosen = torch.exp(log_p_chosen)
+        p_rejected = torch.exp(log_p_rejected)
+
+        # Compute binary entropy: H(p) = -p*log(p) - (1-p)*log(1-p)
+        # For numerical stability, add small epsilon to avoid log(0)
+        eps = 1e-10
+        entropy = -(
+            p_chosen * torch.log(p_chosen + eps) +
+            p_rejected * torch.log(p_rejected + eps)
+        )  # Shape: (batch_size,)
+
+        # Minimize negative entropy = maximize entropy
+        # At maximum: entropy ≈ log(2) ≈ 0.693
+        losses = -entropy
+
+        # Compute rewards for logging (same as original CPO)
+        chosen_rewards = self.beta * policy_chosen_logps.detach()
+        rejected_rewards = self.beta * policy_rejected_logps.detach()
+
         return losses, chosen_rewards, rejected_rewards
 
 
@@ -342,7 +379,7 @@ def setup_comet_logging(config):
 def create_output_path(base_output_dir, model_name, gradient_ascent):
     """
     Create output path with model name and gradient ascent/descent suffix.
-    
+
     Parameters
     ----------
     base_output_dir : str
@@ -351,29 +388,29 @@ def create_output_path(base_output_dir, model_name, gradient_ascent):
         HuggingFace model identifier.
     gradient_ascent : bool
         Whether gradient ascent is being used.
-    
+
     Returns
     -------
     str
         Full output path with model name and suffix.
-    
+
     Examples
     --------
     >>> create_output_path('outputs', 'Qwen/Qwen2.5-0.5B-Instruct', False)
     'outputs/qwen2.5-0.5b-instruct_gd'
-    
+
     >>> create_output_path('outputs', 'Qwen/Qwen2.5-0.5B-Instruct', True)
     'outputs/qwen2.5-0.5b-instruct_ga'
     """
     # Extract model name (last part after /)
     model_short_name = model_name.split('/')[-1].lower()
-    
+
     # Create suffix based on gradient ascent/descent
     suffix = 'ga' if gradient_ascent else 'gd'
-    
+
     # Combine: base_dir/model_name_suffix
     output_path = os.path.join(base_output_dir, f"{model_short_name}_{suffix}")
-    
+
     return output_path
 
 
@@ -523,12 +560,12 @@ def merge_and_save(lora_model_path, output_path, base_model_name=DEFAULT_MODEL):
         Path where merged model will be saved.
     base_model_name : str, optional
         HuggingFace identifier for base model.
-
-    Returns
-    -------
-    transformers.PreTrainedModel
-        Merged model with LoRA weights integrated.
     """
+    # Early return, if already exists
+    if os.path.exists(output_path):
+        logger.info(f"Merged model already exists at {output_path}! Skipping merge...")
+        return
+
     logger.info(f"Merging LoRA weights from {lora_model_path}")
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -550,8 +587,7 @@ def merge_and_save(lora_model_path, output_path, base_model_name=DEFAULT_MODEL):
     tokenizer.save_pretrained(output_path)
 
     logger.info("Merge complete!")
-
-    return merged_model
+    return
 
 
 def run_training(
@@ -668,7 +704,7 @@ def run_training(
 
     # Set training path
     config["train_data_path"] = train_data or TRAIN_PATH
-    
+
     # Update output directory, and create subdirectory based on gradient mode
     output_dir = output_dir or OUTPUT_MODEL_DIR
     subdir = "ga" if gradient_ascent else "gd"

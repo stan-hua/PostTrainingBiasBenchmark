@@ -6,6 +6,7 @@ Description: Evaluate models before and after RTN W4A16 quantization, modulating
 """
 
 # Standard libraries
+import ast
 import json
 import os
 
@@ -15,7 +16,6 @@ from glob import glob
 
 # Custom libraries
 import config
-from src.utils.llm_gen_wrapper import LLMGeneration, extract_model_path_or_name
 
 
 ################################################################################
@@ -47,7 +47,7 @@ def load_data(split):
         },
         axis=1
     ).tolist()
-    
+
     return df_data, data_dict
 
 
@@ -64,6 +64,9 @@ def infer(model_path_or_name, split, overwrite=False):
     overwrite : bool, optional
         Whether to overwrite existing predictions. Default is False.
     """
+    # Late import
+    from src.utils.llm_gen_wrapper import LLMGeneration, extract_model_path_or_name
+
     # Create save path
     model_name, model_path = extract_model_path_or_name(model_path_or_name)
     save_dir = os.path.join(config.CAUSALITY_PATHS["predictions_dir"], model_name)
@@ -104,7 +107,7 @@ def infer(model_path_or_name, split, overwrite=False):
     return df_accum
 
 
-def evaluate_flipping(split, gradient_ascent=False, overwrite=False):
+def evaluate_flipping(split, overwrite=False):
     """
     Check for response flipping for the data split
 
@@ -112,18 +115,13 @@ def evaluate_flipping(split, gradient_ascent=False, overwrite=False):
     ----------
     split : str
         The data split being evaluated ('train', 'test', 'unseen_test').
-    gradient_ascent : bool, optional
-        If True, evaluate models that did gradient ascent (more uncertainty).
-        Default is False.
     overwrite : bool, optional
         Whether to overwrite existing evaluation results. Default is False.
     """
-    infix = "ga" if gradient_ascent else "gd"
-
     # Create save path
     save_dir = config.CAUSALITY_PATHS["results_dir"]
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, f"{infix}-{split}_evaluation.csv")
+    save_path = os.path.join(save_dir, f"{split}_evaluation.csv")
 
     # Early return, if evaluation already exists
     if not overwrite and os.path.exists(save_path):
@@ -132,36 +130,104 @@ def evaluate_flipping(split, gradient_ascent=False, overwrite=False):
 
     # Get all predictions
     save_path_regex = os.path.join(
-        config.CAUSALITY_PATHS["evaluations_dir"], f"*_{infix}_*",
+        config.CAUSALITY_PATHS["predictions_dir"], f"*",
         f"{split}_predictions.csv",
     )
-    accum_preds = []
+
+    # Map predictions to before and after quantization
+    name_to_base = {}
+    name_to_modified = {}
     for pred_path in glob(save_path_regex):
-        # Load predictions
         df_preds = pd.read_csv(os.path.join(pred_path))
+        model_name = df_preds["model"].iloc[0]
+        base_model_name = get_base_model(model_name)
+        # Parse epoch
+        if "epoch_" in base_model_name:
+            df_preds["epoch"] = int(base_model_name.split("epoch_")[-1].split("-")[0])
+        else:
+            df_preds["epoch"] = -1
+        # Parse fine-tuning
+        if "_gd-" in base_model_name:
+            df_preds["finetuned"] = "gd"
+        elif "_ga-" in base_model_name:
+            df_preds["finetuned"] = "ga"
+        else:
+            df_preds["finetuned"] = "none"
+        # Parse probabilities
+        df_preds["res_probs"] = df_preds["res_probs"].apply(ast.literal_eval)
+        # Parse choices
+        df_preds["choices"] = df_preds["choices"].apply(ast.literal_eval)
+        # Compute uncertainty (entropy) in unquantized versus quantized
+        df_preds["res_probs_entropy"] = df_preds["res_probs"].apply(compute_entropy)
+        # Create flag if response is biased
+        df_preds["is_biased"] = df_preds.apply(
+            lambda row: row["choices"][0] != row["res"],
+            axis=1,
+        )
+        # CASE 1: Unquantized model
+        if model_name == base_model_name:
+            name_to_base[model_name] = df_preds
+        # CASE 2: Quantized model
+        else:
+            name_to_modified[base_model_name] = df_preds
 
-    # Load ground truth data
-    df_data, _ = load_data(split)
+    # Pair predictions before and after quantization
+    all_model_names = set(name_to_base.keys()).intersection(set(name_to_modified.keys()))
+    accum_data = []
+    for model_name in all_model_names:
+        df_base = name_to_base[model_name]
+        df_modified = name_to_modified[model_name]
+        # Separate out identical columns
+        shared_cols = ["prompt", "choices", "finetuned", "epoch"]
+        df_shared = df_base[["idx"] + shared_cols]
+        df_base = df_base.drop(columns=shared_cols)
+        df_modified = df_modified.drop(columns=shared_cols)
+        # Merge on idx
+        df_merged = pd.merge(
+            df_base, df_modified,
+            on="idx",
+            suffixes=("_base", "_modified"),
+        )
+        # Merge back shared columns
+        df_merged = pd.merge(
+            df_merged, df_shared,
+            on="idx",
+            how="left"
+        )
+        # Calculate response/bias flipping
+        df_merged["response_flipped"] = df_merged["res_base"] != df_merged["res_modified"]
+        df_merged["bias_flipped"] = df_merged.apply(
+            lambda row:
+                None if not row["response_flipped"] else
+                (("B" if row["is_biased_base"] else "UnB") + "->" +
+                ("B" if row["is_biased_modified"] else "UnB")),
+            axis=1
+        )
+        # Accumulate paired predictions
+        accum_data.append(df_merged)
 
-    # Merge predictions with ground truth
-    df_merged = pd.merge(df_data, df_preds, on="idx", suffixes=("_true", "_pred"))
+    # Concatenate all model evaluations
+    df_paired = pd.concat(accum_data, ignore_index=True)
 
-    # Calculate accuracy
-    correct_preds = df_merged.apply(
-        lambda row: row["choices_pred"].index(row["accept_response_true"]) < 
-                    row["choices_pred"].index(row["reject_response_true"]),
-        axis=1
+    # Add social group information
+    df_metadata = pd.read_csv(config.CAUSALITY_PATHS[f"{split}_set"])
+    df_metadata = df_metadata[["idx", "social_group"]]
+    df_paired = pd.merge(
+        df_metadata, df_paired,
+        how="right",
+        on="idx",
     )
-    accuracy = correct_preds.mean()
 
-    # Save evaluation results
-    eval_results = {"accuracy": accuracy}
-    with open(save_path, "w") as f:
-        json.dump(eval_results, f, indent=4)
+    # Group by fine-tuning method, epoch, and social group
+    group_cols = ["finetuned", "epoch", "social_group"]
+    df_paired.groupby(group_cols)["response_flipped"].mean()
 
     return eval_results
 
 
+################################################################################
+#                               Helper Functions                               #
+################################################################################
 def get_base_model(model_name):
     """
     Get name of model pre-quantization
@@ -184,10 +250,19 @@ def get_base_model(model_name):
     # NOTE: Choose longest matching base model name
     curr_base_model = None
     for base_model in instruct_models + non_instruct_models:
-        if base_model in model_name (and curr_base_model is None or len(base_model) > len(curr_base_model)):
+        if base_model in model_name and (curr_base_model is None or len(base_model) > len(curr_base_model)):
             curr_base_model = base_model
 
     return curr_base_model
+
+
+def compute_entropy(values, base=2):
+    if values is None:
+        return None
+    values = np.array(values)
+    values = values[values > 0]
+    values /= values.sum()  # Normalize to make a probability distribution
+    return -np.sum(values * np.log(values) / np.log(base))
 
 
 
