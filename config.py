@@ -566,23 +566,6 @@ MODEL_INFO = {
         "gemma-2-27b-it-LC-SmoothQuant-RTN-W4A16": "gemma2-27b-instruct-lc-smooth-rtn-w4a16",
         "gemma-2-27b-it-LC-SmoothQuant-RTN-W8A16": "gemma2-27b-instruct-lc-smooth-rtn-w8a16",
         "gemma-2-27b-it-LC-SmoothQuant-RTN-W8A8": "gemma2-27b-instruct-lc-smooth-rtn-w8a8",
-
-        ########################################################################
-        #                        Causality Experiments                         #
-        ########################################################################
-        # Gradient descent (epoch checkpoints)
-        "qwen2.5-0.5b-instruct_gd-checkpoint-82-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-gd-epoch_1-lc-rtn-w4a16",
-        "qwen2.5-0.5b-instruct_gd-checkpoint-164-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-gd-epoch_2-lc-rtn-w4a16",
-        "qwen2.5-0.5b-instruct_gd-checkpoint-246-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-gd-epoch_3-lc-rtn-w4a16",
-        "qwen2.5-0.5b-instruct_gd-checkpoint-328-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-gd-epoch_4-lc-rtn-w4a16",
-        "qwen2.5-0.5b-instruct_gd-checkpoint-410-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-gd-epoch_5-lc-rtn-w4a16",
-
-        # Gradient ascent (epoch checkpoints)
-        "qwen2.5-0.5b-instruct_ga-checkpoint-82-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-ga-epoch_1-lc-rtn-w4a16",
-        "qwen2.5-0.5b-instruct_ga-checkpoint-164-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-ga-epoch_2-lc-rtn-w4a16",
-        "qwen2.5-0.5b-instruct_ga-checkpoint-246-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-ga-epoch_3-lc-rtn-w4a16",
-        "qwen2.5-0.5b-instruct_ga-checkpoint-328-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-ga-epoch_4-lc-rtn-w4a16",
-        "qwen2.5-0.5b-instruct_ga-checkpoint-410-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-ga-epoch_5-lc-rtn-w4a16",
     },
 
     # Model Grouping
@@ -641,6 +624,22 @@ MODEL_INFO = {
     "wenxin_model": wenxin_model,
     "replicate_model":replicate_model,
 }
+
+
+################################################################################
+#                     Causality Experiment Model Mappings                      #
+################################################################################
+# Create model shorthands
+causal_model_mapping = {}
+base_model = "qwen2.5-0.5b-instruct"
+for grad_type in ["_ga", "_gd"]:
+    for epoch_idx, ckpt_idx in enumerate(["84", "168", "252", "336", "420"]):
+        for quant_suffix in ["", "-LC-RTN-W4A16"]:
+            key = f"{base_model}{grad_type}-checkpoint-{ckpt_idx}-merged{quant_suffix}"
+            val = f"{base_model}{grad_type}-epoch_{epoch_idx+1}{quant_suffix.lower()}"
+            causal_model_mapping[key] = val
+MODEL_INFO["model_path_to_name"].update(causal_model_mapping)
+del causal_model_mapping, base_model, key, val
 
 
 ################################################################################

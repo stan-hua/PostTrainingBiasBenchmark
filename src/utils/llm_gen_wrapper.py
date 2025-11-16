@@ -801,7 +801,7 @@ class LLMGeneration:
             # Normalize probabilities and store choice with highest probability
             normalized_probs = [prob / sum(choices_probs) for prob in choices_probs]
             row["res"] = choices[normalized_probs.index(max(normalized_probs))]
-            row["res_probs"] = [round(prob, 4) for prob in normalized_probs]
+            row["res_probs"] = [round(float(prob), 4) for prob in normalized_probs]
         except Exception:
             # Print error message if there"s an issue during processing
             LOGGER.error(f"[process_row_single_turn] Exception occured!")

@@ -72,10 +72,11 @@ def infer(model_path_or_name, split, overwrite=False):
 
     # Early return, if predictions already exist
     if not overwrite and os.path.exists(save_path):
-        print(f"Predictions already exist at {save_path}. Skipping inference.")
+        print(f"Skipping! Predictions exist for model: `{model_name}`")
         return pd.read_csv(save_path)
 
     # Load model
+    print(f"Performing inference for model: `{model_name}`")
     model_wrapper = LLMGeneration(model_path_or_name=model_path)
 
     # Prepare data
@@ -94,11 +95,12 @@ def infer(model_path_or_name, split, overwrite=False):
     df_accum = pd.DataFrame(accum_data)
 
     # Add columns for model name
-    df_accum["model_modified"] = model_wrapper.model_name
+    df_accum["model"] = model_wrapper.model_name
 
     # Save predictions
     df_accum.to_csv(save_path, index=False)
 
+    print(f"Done!")
     return df_accum
 
 
