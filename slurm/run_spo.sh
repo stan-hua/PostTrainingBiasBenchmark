@@ -29,6 +29,10 @@
 
 # Set output directory
 DIR_OUTPUTS="data/save_data/analysis/causality/outputs"
+DIR_OUTPUT_MODELS="$DIR_OUTPUTS/models"
+
+# Base Model
+BASE_MODEL="Qwen/Qwen2.5-0.5B-Instruct"
 
 ################################################################################
 #                               Fine-Tune on BBQ                               #
@@ -48,7 +52,7 @@ DIR_OUTPUTS="data/save_data/analysis/causality/outputs"
 # for grad_type in "gd" "ga"; do
 #     # For each checkpoint
 #     for ckpt_idx in "84" "168" "252" "336" "420"; do
-#         DIR_CURR="$DIR_OUTPUTS/${grad_type}/qwen2.5-0.5b-instruct_${grad_type}"
+#         DIR_CURR="$DIR_OUTPUT_MODELS/${grad_type}/qwen2.5-0.5b-instruct_${grad_type}"
 #         LORA_PATH="$DIR_CURR/checkpoint-${ckpt_idx}"
 #         OUTPUT_PATH="$DIR_CURR-checkpoint-${ckpt_idx}-merged"
 
@@ -63,11 +67,17 @@ DIR_OUTPUTS="data/save_data/analysis/causality/outputs"
 ################################################################################
 #                                Quantize Model                                #
 ################################################################################
+# Quantize original model
+pixi run -e quantizer python -m scripts.quant.quantize_model \
+    rtn \
+    --model_path $BASE_MODEL \
+    --save_dir $DIR_OUTPUT_MODELS
+
 # # For each gradient ascent/descent
 # for grad_type in "gd" "ga"; do
 #     # For each checkpoint
 #     for ckpt_idx in "84" "168" "252" "336" "420"; do
-#         DIR_CURR="$DIR_OUTPUTS/${grad_type}"
+#         DIR_CURR="$DIR_OUTPUT_MODELS/${grad_type}"
 #         DIR_MODEL="$DIR_CURR/qwen2.5-0.5b-instruct_${grad_type}-checkpoint-${ckpt_idx}-merged"
 #         DIR_QUANTIZED="$DIR_CURR/rtn_w4_quantized/"
 #         mkdir -p $DIR_QUANTIZED
@@ -86,8 +96,14 @@ DIR_OUTPUTS="data/save_data/analysis/causality/outputs"
 ################################################################################
 # Predict with original model
 for split in "train" "test" "unseen_test"; do
+    # Oringal model
     pixi run -e vllm python -m scripts.causality.evaluate infer \
-        --model_path_or_name "Qwen/Qwen2.5-0.5B-Instruct" \
+        --model_path_or_name $BASE_MODEL \
+        --split $split
+
+    # Quantized original model
+    pixi run -e vllm python -m scripts.causality.evaluate infer \
+        --model_path_or_name $DIR_OUTPUT_MODELS/Qwen2.5-0.5B-Instruct-LC-RTN-W4A16 \
         --split $split
 done
 
@@ -96,7 +112,7 @@ for grad_type in "gd" "ga"; do
     # For each checkpoint
     for ckpt_idx in "84" "168" "252" "336" "420"; do
         for split in "train" "test" "unseen_test"; do
-            DIR_CURR="$DIR_OUTPUTS/${grad_type}"
+            DIR_CURR="$DIR_OUTPUT_MODELS/${grad_type}"
             DIR_ORIGINAL="$DIR_CURR/qwen2.5-0.5b-instruct_${grad_type}-checkpoint-${ckpt_idx}-merged"
             DIR_QUANTIZED="$DIR_CURR/rtn_w4_quantized/qwen2.5-0.5b-instruct_${grad_type}-checkpoint-${ckpt_idx}-merged-LC-RTN-W4A16"
 

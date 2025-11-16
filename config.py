@@ -207,6 +207,8 @@ CAUSALITY_PATHS = {
     "predictions_dir": os.path.join(DIR_CAUSALITY, "outputs", "predictions"),
     # Directory to save evaluation results
     "results_dir": os.path.join(DIR_CAUSALITY, "outputs", "results"),
+    # Directory containing quantized models
+    "models_dir": os.path.join(DIR_CAUSALITY, "outputs", "models"),
 
     # Training and test data for preference optimization
     "train_set": os.path.join(DIR_CAUSALITY, "train.csv"),

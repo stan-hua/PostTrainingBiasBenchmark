@@ -43,7 +43,9 @@ logger = logging.getLogger(__name__)
 
 # Default training dataset
 TRAIN_PATH = config.CAUSALITY_PATHS["train_set"]
-OUTPUT_DIR = config.CAUSALITY_PATHS["output_dir"]
+
+# Path to directory to store models
+OUTPUT_MODEL_DIR = config.CAUSALITY_PATHS["models_dir"]
 
 # Use Comet for logging
 USE_COMET_ML = True
@@ -136,7 +138,7 @@ def get_default_config():
 
         # Data
         'train_data_path': TRAIN_PATH,
-        'output_dir': OUTPUT_DIR,
+        'output_dir': OUTPUT_MODEL_DIR,
 
         # LoRA config
         'lora_r': 16,
@@ -668,7 +670,7 @@ def run_training(
     config["train_data_path"] = train_data or TRAIN_PATH
     
     # Update output directory, and create subdirectory based on gradient mode
-    output_dir = output_dir or OUTPUT_DIR
+    output_dir = output_dir or OUTPUT_MODEL_DIR
     subdir = "ga" if gradient_ascent else "gd"
     output_dir = os.path.join(output_dir, subdir)
     os.makedirs(output_dir, exist_ok=True)
