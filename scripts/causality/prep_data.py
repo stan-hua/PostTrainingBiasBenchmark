@@ -6,6 +6,7 @@ Description: Prepare preference optimization data and evaluation data for
 """
 
 # Standard libraries
+import ast
 import os
 
 # Non-standard libraries
@@ -61,6 +62,10 @@ def create_po_dataset():
     # Filter out duplicate prompts
     df_data = df_data.drop_duplicates(subset=["prompt"])
 
+    # Parse choices
+    if isinstance(df_data["choices"].iloc[0], str):
+        df_data["choices"] = df_data["choices"].apply(ast.literal_eval)
+
     # Create preference pairs by pairing unknown and stereotypical response
     df_data["accept_response"] = df_data.apply(
         lambda row: row["choices"][row["unknown_label"]-1],
@@ -74,7 +79,6 @@ def create_po_dataset():
     ############################################################################
     #                 Create Train/Test from Social Groups                     #
     ############################################################################
-    # Combine into a single DataFrame
     df_summary = pd.DataFrame({
         "num_sizes": df_data.groupby("social_group").size(),
         "prop_flipped": df_data.groupby("social_group")["Flipped"].mean()

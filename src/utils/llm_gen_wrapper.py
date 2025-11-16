@@ -1373,13 +1373,17 @@ def extract_model_path_or_name(model_path_or_name, model_provider="vllm", use_ch
         (i) Model (nick)name
         (ii) Path to model
     """
+    # Remove trailing slash
+    if model_path_or_name.endswith("/"):
+        model_path_or_name = model_path_or_name[:-1]
+
     # Get model name and path
     model_path_to_name = MODEL_INFO["model_path_to_name"]
     model_name_to_path = {v:k for k,v in model_path_to_name.items()}
     if model_path_or_name in model_path_to_name:
         model_path = model_path_or_name
         model_name = model_path_to_name[model_path_or_name]
-    if model_path_or_name in model_name_to_path:
+    elif model_path_or_name in model_name_to_path:
         model_name = model_path_or_name
         model_path = model_name_to_path[model_path_or_name]
     elif model_path_or_name.split("/")[-1] in model_path_to_name:

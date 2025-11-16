@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:A40:1
 #SBATCH --qos=a40_gpu3_normal
-#SBATCH --time=06:00:00
+#SBATCH --time=05:00:00
 #SBATCH --mem=32GB
 #SBATCH -o slurm/logs/slurm-run_spo-%j.out
 
@@ -19,11 +19,13 @@
 #                                 Environment                                  #
 ################################################################################
 # Load any necessary modules or activate your virtual environment here
+
 # Option 1. Using conda
 # conda activate fairbench
+
 # (Recommended) Option 2. Pixi
-export TRANSFORMERS_NO_TORCHVISION=1
-pixi shell -e simpo
+# NOTE: Already used in commands below
+# pixi shell -e simpo
 
 # Set output directory
 DIR_OUTPUTS="data/save_data/analysis/causality/outputs"
@@ -68,11 +70,38 @@ for grad_type in "ga" "gd"; do
         DIR_CURR="$DIR_OUTPUTS/${grad_type}"
         DIR_MODEL="$DIR_CURR/qwen2.5-0.5b-instruct_${grad_type}-checkpoint-${ckpt_idx}-merged"
         DIR_QUANTIZED="$DIR_CURR/rtn_w4_quantized/"
+        mkdir -p $DIR_QUANTIZED
 
         # Quantize model at each checkpoint
         pixi run -e quantizer python -m scripts.quant.quantize_model \
             rtn \
             --model_path $DIR_MODEL \
             --save_dir $DIR_QUANTIZED
+    done
+done
+
+
+################################################################################
+#                             Perform Predictions                              #
+################################################################################
+# For each gradient ascent/descent
+for grad_type in "ga" "gd"; do
+    # For each checkpoint
+    for ckpt_idx in "82" "164" "246" "328" "410"; do
+        for split in "train" "test" "unseen_test"; do
+            DIR_CURR="$DIR_OUTPUTS/${grad_type}"
+            DIR_ORIGINAL="$DIR_CURR/qwen2.5-0.5b-instruct_${grad_type}-checkpoint-${ckpt_idx}-merged"
+            DIR_QUANTIZED="$DIR_CURR/rtn_w4_quantized/qwen2.5-0.5b-instruct_${grad_type}-checkpoint-${ckpt_idx}-merged-LC-RTN-W4A16"
+
+            # 1. Predict with unquantized model
+            pixi run -e vllm python -m scripts.causality.evaluate infer \
+                --model_path_or_name $DIR_ORIGINAL \
+                --split $split
+
+            # 2. Predict with quantized model
+            pixi run -e vllm python -m scripts.causality.evaluate infer \
+                --model_path_or_name $DIR_QUANTIZED \
+                --split $split
+        done
     done
 done

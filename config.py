@@ -203,6 +203,10 @@ CAUSALITY_PATHS = {
 
     # Output causality directory
     "output_dir": os.path.join(DIR_CAUSALITY, "outputs"),
+    # Directory containing model predictions
+    "predictions_dir": os.path.join(DIR_CAUSALITY, "outputs", "predictions"),
+    # Directory to save evaluation results
+    "results_dir": os.path.join(DIR_CAUSALITY, "outputs", "results"),
 
     # Training and test data for preference optimization
     "train_set": os.path.join(DIR_CAUSALITY, "train.csv"),
@@ -562,6 +566,23 @@ MODEL_INFO = {
         "gemma-2-27b-it-LC-SmoothQuant-RTN-W4A16": "gemma2-27b-instruct-lc-smooth-rtn-w4a16",
         "gemma-2-27b-it-LC-SmoothQuant-RTN-W8A16": "gemma2-27b-instruct-lc-smooth-rtn-w8a16",
         "gemma-2-27b-it-LC-SmoothQuant-RTN-W8A8": "gemma2-27b-instruct-lc-smooth-rtn-w8a8",
+
+        ########################################################################
+        #                        Causality Experiments                         #
+        ########################################################################
+        # Gradient descent (epoch checkpoints)
+        "qwen2.5-0.5b-instruct_gd-checkpoint-82-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-gd-epoch_1-lc-rtn-w4a16",
+        "qwen2.5-0.5b-instruct_gd-checkpoint-164-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-gd-epoch_2-lc-rtn-w4a16",
+        "qwen2.5-0.5b-instruct_gd-checkpoint-246-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-gd-epoch_3-lc-rtn-w4a16",
+        "qwen2.5-0.5b-instruct_gd-checkpoint-328-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-gd-epoch_4-lc-rtn-w4a16",
+        "qwen2.5-0.5b-instruct_gd-checkpoint-410-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-gd-epoch_5-lc-rtn-w4a16",
+
+        # Gradient ascent (epoch checkpoints)
+        "qwen2.5-0.5b-instruct_ga-checkpoint-82-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-ga-epoch_1-lc-rtn-w4a16",
+        "qwen2.5-0.5b-instruct_ga-checkpoint-164-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-ga-epoch_2-lc-rtn-w4a16",
+        "qwen2.5-0.5b-instruct_ga-checkpoint-246-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-ga-epoch_3-lc-rtn-w4a16",
+        "qwen2.5-0.5b-instruct_ga-checkpoint-328-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-ga-epoch_4-lc-rtn-w4a16",
+        "qwen2.5-0.5b-instruct_ga-checkpoint-410-merged-LC-RTN-W4A16": "qwen2.5-0.5b-instruct-ga-epoch_5-lc-rtn-w4a16",
     },
 
     # Model Grouping
