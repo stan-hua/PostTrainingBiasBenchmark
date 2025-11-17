@@ -9,6 +9,7 @@ Description: Evaluate models before and after RTN W4A16 quantization, modulating
 import ast
 import json
 import os
+import re
 
 # Non-standard libraries
 import numpy as np
@@ -17,6 +18,7 @@ from glob import glob
 
 # Custom libraries
 import config
+from src.utils import viz_utils
 
 
 ################################################################################
@@ -121,7 +123,7 @@ def pair_responses(split, overwrite=False):
         Whether to overwrite existing evaluation results. Default is False.
     """
     # Create save path
-    save_dir = config.CAUSALITY_PATHS["results_dir"]
+    save_dir = config.CAUSALITY_PATHS["predictions_dir"]
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, f"{split}-paired_preds.csv")
 
@@ -254,6 +256,7 @@ def investigate_flipping():
     ).rename(columns={
         "before": "entropy-pre_SimPO-pre_RTN",
         "after": "entropy-post_SimPO-pre_RTN",
+        "diff": "entropy_diff_from_SimPO-pre_RTN",
     })
 
     # Compute entropy before/after SimPO for quantized model
@@ -264,6 +267,7 @@ def investigate_flipping():
     ).rename(columns={
         "before": "entropy-pre_SimPO-post_RTN",
         "after": "entropy-post_SimPO-post_RTN",
+        "diff": "entropy_diff_from_SimPO-post_RTN",
     })
 
     # Merge entropy dataframes
@@ -271,6 +275,16 @@ def investigate_flipping():
         df_entropy_base, df_entropy_modified,
         on=["social_group", "strategy"]
     ).set_index(["social_group", "strategy"]).round(3)
+
+    # Compute how much RTN affected entropy change due to SimPO
+    df_entropy["entropy_diff"] = df_entropy["entropy-post_SimPO-post_RTN"] - df_entropy["entropy-pre_SimPO-pre_RTN"]
+    df_entropy[["entropy_diff", "entropy_diff_from_SimPO-pre_RTN", "entropy_diff_from_SimPO-post_RTN"]]
+
+    # TODO: Directly compute difference in entropy between pre-RTN and post-RTN for the same pre/post-SimPO
+
+    # TODO: Compute percentage recovery
+
+    # TODO: Understand flipping
 
     # Compute entropy before/after SimPO for quantized model
     # NOTE: Observation. Groups that weren't flipping much before SimPO
@@ -294,6 +308,65 @@ def investigate_flipping():
         "before": "flipping-pre_SimPO",
         "after": "flipping-post_SimPO",
     }).set_index(["uncertainty_bin_base", "strategy"]).round(3)
+
+
+    ############################################################################
+    #                               Figures                                    #
+    ############################################################################
+    save_dir = os.path.join(config.CAUSALITY_PATHS["results_dir"], "figures")
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Rename column
+    strategy_map = {
+        "none": "Baseline",
+        "gd": "SimPO (Uncertainty ↓)",
+        "ga": "EntropyMax (Uncertainty ↑)",
+    }
+    df_paired["Action"] = df_paired["strategy"].map(strategy_map.get)
+
+    # line style for each item
+    style_map = {
+        "EntropyMax (Uncertainty ↑)": {
+            "linestyle": "dashdot",
+            "color": "#B85C5C",
+        },
+        "Baseline": {
+            "linestyle": "solid",
+            "color": "black",
+        },
+        "SimPO (Uncertainty ↓)": {
+            "linestyle": "dashed",
+            "color": "#1f77b4",
+        },
+    }
+
+    # Plot 1. SimPo/EntropyMax affect uncertainty
+    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+    for idx, action in enumerate(style_map.keys()):
+        plot_kwargs = {}
+        if idx == len(style_map) - 1:
+            plot_kwargs.update({
+                "xlabel": "Entropy (Pre-Quantization)",
+                "ylabel": "Density",
+                "x_lim": [0, 0.5],
+                "title": None,
+            })
+        viz_utils.catplot(
+            df_paired[df_paired["Action"] == action],
+            plot_type="kde", fill=False, multiple="layer", common_norm=False, cut=0,
+            linewidth=10,
+            x="res_probs_entropy_base",
+            label=action,
+            linestyle=style_map[action]["linestyle"],
+            color=style_map[action]["color"],
+            **plot_kwargs
+        )
+
+    # Save figure
+    plt.legend(title=None, fontsize=24, title_fontsize=28)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "fig_a-entropy.svg"))
+    plt.close()
 
 
 ################################################################################
@@ -394,6 +467,54 @@ def compute_agg_by_group(
     df_merged["diff"] = df_merged["after"] - df_merged["before"]
 
     return df_merged
+
+
+def parse_np_float64_string(text):
+    """
+    Parse string containing list of np.float64(...) values into list of
+    rounded floats
+
+    Parameters
+    ----------
+    text : str
+        Input string
+    
+    Returns
+    -------
+    list of float
+        Parsed and rounded float values
+    """
+    # Early return, if no np.float64 found in text
+    if "np.float64" not in text:
+        return text
+    numbers = re.findall(r"np\.float64\(([\d\.\-eE]+)\)", text)
+    floats = [round(float(num), 4) for num in numbers]
+    return floats
+
+
+def parse_np_float64_string_all():
+    """
+    Parse all prediction files to convert np.float64(...) strings into
+    lists of rounded floats.
+    """
+    # Get all predictions
+    save_path_regex = os.path.join(
+        config.CAUSALITY_PATHS["predictions_dir"], f"*",
+        f"*_predictions.csv",
+    )
+
+    # Map predictions to before and after quantization
+    for pred_path in glob(save_path_regex):
+        df_preds = pd.read_csv(os.path.join(pred_path))
+        # Check if np.float64 if in stored probabilities
+        updated = False
+        for col in ["res_probs", "res_probs_unnorm"]:
+            if df_preds[col].str.contains("np.float64").any():
+                df_preds[col] = df_preds[col].apply(parse_np_float64_string)
+                updated = True
+        # Store
+        if updated:
+            df_preds.to_csv(pred_path, index=False)
 
 
 ################################################################################
