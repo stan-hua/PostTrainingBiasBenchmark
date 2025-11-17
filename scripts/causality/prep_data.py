@@ -90,7 +90,7 @@ def create_po_dataset():
     ############################################################################
     df_summary = pd.DataFrame({
         "num_sizes": df_data.groupby("social_group").size(),
-        "prop_flipped": df_data.groupby("social_group")["Flipped"].mean()
+        "prop_flipped": df_data.groupby("social_group")["Bias_Flipped"].mean()
     }).reset_index()
 
     # Get top 3 and bottom 3 social groups by prop_flipped

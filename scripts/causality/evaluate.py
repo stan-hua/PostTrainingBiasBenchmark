@@ -11,6 +11,7 @@ import json
 import os
 
 # Non-standard libraries
+import numpy as np
 import pandas as pd
 from glob import glob
 
@@ -107,9 +108,9 @@ def infer(model_path_or_name, split, overwrite=False):
     return df_accum
 
 
-def evaluate_flipping(split, overwrite=False):
+def pair_responses(split, overwrite=False):
     """
-    Check for response flipping for the data split
+    Pair all unquantized and quantized model checkpoints
 
     Parameters
     ----------
@@ -121,7 +122,7 @@ def evaluate_flipping(split, overwrite=False):
     # Create save path
     save_dir = config.CAUSALITY_PATHS["results_dir"]
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, f"{split}_evaluation.csv")
+    save_path = os.path.join(save_dir, f"{split}-paired_preds.csv")
 
     # Early return, if evaluation already exists
     if not overwrite and os.path.exists(save_path):
@@ -218,11 +219,37 @@ def evaluate_flipping(split, overwrite=False):
         on="idx",
     )
 
-    # Group by fine-tuning method, epoch, and social group
-    group_cols = ["finetuned", "epoch", "social_group"]
-    df_paired.groupby(group_cols)["response_flipped"].mean()
+    # Create bins for uncertainty
+    df_paired["uncertainty_bin_base"] = pd.cut(
+        df_paired["res_probs_entropy_base"], 5,
+    )
 
-    return eval_results
+    # Save paired data
+    df_paired.to_csv(save_path, index=False)
+
+    # Flipping by social group
+    group_cols = ["finetuned", "epoch", "social_group"]
+    df_prop = df_paired.groupby(group_cols)["response_flipped"].mean().reset_index()
+
+    # Pivot the table
+    pivot_df = df_prop.pivot_table(
+        index=["finetuned", "social_group"],
+        columns="epoch",
+        values="response_flipped"
+    )
+    pivot_df = pivot_df.rename_axis(columns="epoch").reset_index()
+
+    # Flipping by uncertainty bin
+    group_cols = ["finetuned", "epoch", "uncertainty_bin_base"]
+    df_prop = df_paired.groupby(group_cols)["response_flipped"].mean().reset_index()
+    pivot_df = df_prop.pivot_table(
+        index=["finetuned", "uncertainty_bin_base"],
+        columns="epoch",
+        values="response_flipped"
+    )
+    pivot_df = pivot_df.rename_axis(columns="epoch").reset_index()
+
+    return df_paired
 
 
 ################################################################################
@@ -263,7 +290,6 @@ def compute_entropy(values, base=2):
     values = values[values > 0]
     values /= values.sum()  # Normalize to make a probability distribution
     return -np.sum(values * np.log(values) / np.log(base))
-
 
 
 if __name__ == "__main__":
