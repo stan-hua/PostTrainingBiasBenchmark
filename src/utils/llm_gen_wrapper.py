@@ -815,7 +815,7 @@ class LLMGeneration:
             
             # Include unnormalized geom. mean token probabilities, if specified
             if include_unnormalized:
-                row["res_probs_unnorm"] = choices_probs
+                row["res_probs_unnorm"] = [round(float(prob), 4) for prob in choices_probs]
         except Exception:
             # Print error message if there"s an issue during processing
             LOGGER.error(f"[process_row_single_turn] Exception occured!")
