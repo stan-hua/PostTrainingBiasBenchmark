@@ -94,6 +94,7 @@ def infer(model_path_or_name, split, overwrite=False):
             index=row["idx"],
             temperature=1,
             key_name="prompt",
+            include_unnormalized=True,
         )
         accum_data.append(row)
     df_accum = pd.DataFrame(accum_data)
@@ -242,7 +243,7 @@ def investigate_flipping():
     by quantization.
     """
     # Get paired (pre/post-quantization) responses for before and after SimPO
-    df_paired = pair_responses("unseen_test")
+    df_paired = pair_responses("train")
     df_paired = df_paired[df_paired["epoch"].isin([-1, 5])]
 
     # Compute entropy before/after SimPO for unquantized model
@@ -281,6 +282,7 @@ def investigate_flipping():
     ).rename(columns={
         "before": "flipping-pre_SimPO",
         "after": "flipping-post_SimPO",
+        "diff": "flipping-diff",
     }).set_index(["social_group", "strategy"]).round(3)
 
     # Compute entropy before/after SimPO for quantized model

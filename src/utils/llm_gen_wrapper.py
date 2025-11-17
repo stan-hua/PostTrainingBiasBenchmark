@@ -758,7 +758,14 @@ class LLMGeneration:
     ############################################################################
     #     Functions for Benchmarks (Single-Turn Discriminative/Generative)     #
     ############################################################################
-    def process_row_single_turn(self, row, index, temperature, key_name="prompt"):
+    def process_row_single_turn(
+            self,
+            row,
+            index,
+            temperature,
+            key_name="prompt",
+            include_unnormalized=False,
+        ):
         """
         Process a single row of input data, generating a response using the
         current model if the "res" key doesn't exist or its value is empty.
@@ -774,6 +781,9 @@ class LLMGeneration:
         key_name : str, optional
             The key to use for accessing the prompt in the input data element.
             Default is "prompt".
+        include_unnormalized : bool, optional
+            If True, include geometric mean token probability for each response
+            option
         """
         try:
             # If "res" key doesn't exist or its value is empty, generate a new response
@@ -802,6 +812,10 @@ class LLMGeneration:
             normalized_probs = [prob / sum(choices_probs) for prob in choices_probs]
             row["res"] = choices[normalized_probs.index(max(normalized_probs))]
             row["res_probs"] = [round(float(prob), 4) for prob in normalized_probs]
+            
+            # Include unnormalized geom. mean token probabilities, if specified
+            if include_unnormalized:
+                row["res_probs_unnorm"] = choices_probs
         except Exception:
             # Print error message if there"s an issue during processing
             LOGGER.error(f"[process_row_single_turn] Exception occured!")

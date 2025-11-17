@@ -4,9 +4,15 @@
 #SBATCH --partition=savio3_gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:A40:1
-#SBATCH --qos=a40_gpu3_normal
+
+# --cpus-per-task=8
+# --gres=gpu:A40:1
+# --qos=a40_gpu3_normal
+
+#SBATCH --gres=gpu:GTX2080TI:1
+#SBATCH --cpus-per-task=4
+#SBATCH --qos=gtx2080_gpu3_normal
+
 #SBATCH --time=05:00:00
 #SBATCH --mem=32GB
 #SBATCH -o slurm/logs/slurm-run_spo-%j.out
@@ -33,6 +39,9 @@ DIR_OUTPUT_MODELS="$DIR_OUTPUTS/models"
 
 # Base Model
 BASE_MODEL="Qwen/Qwen2.5-0.5B-Instruct"
+
+# Flag to overwrite existing results
+OVERWRITE=True
 
 ################################################################################
 #                               Fine-Tune on BBQ                               #
@@ -99,14 +108,16 @@ for split in "train" "test" "unseen_test"; do
     # Oringal model
     pixi run -e vllm python -m scripts.causality.evaluate infer \
         --model_path_or_name $BASE_MODEL \
-        --split $split
+        --split $split \
+        --overwrite=$OVERWRITE
 
     # Quantized original model
     # NOTE: Quantized model is stored on HuggingFace.
     #       To use local model, change HF_DATA_USERNAME to DIR_OUTPUT_MODELS
     pixi run -e vllm python -m scripts.causality.evaluate infer \
         --model_path_or_name $HF_DATA_USERNAME/Qwen2.5-0.5B-Instruct-LC-RTN-W4A16 \
-        --split $split
+        --split $split \
+        --overwrite=$OVERWRITE
 done
 
 # For each gradient ascent/descent
@@ -121,12 +132,14 @@ for grad_type in "gd" "ga"; do
             # 1. Predict with unquantized checkpoint
             pixi run -e vllm python -m scripts.causality.evaluate infer \
                 --model_path_or_name $DIR_ORIGINAL \
-                --split $split
+                --split $split \
+                --overwrite=$OVERWRITE
 
             # 2. Predict with quantized checkpoint
             pixi run -e vllm python -m scripts.causality.evaluate infer \
                 --model_path_or_name $DIR_QUANTIZED \
-                --split $split
+                --split $split \
+                --overwrite=$OVERWRITE
         done
     done
 done
