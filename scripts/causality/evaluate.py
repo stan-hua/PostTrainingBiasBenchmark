@@ -127,7 +127,13 @@ def pair_responses(split, overwrite=False):
     # Early return, if evaluation already exists
     if not overwrite and os.path.exists(save_path):
         print(f"Evaluation already exists at `{save_path}`! Skipping evaluation...")
-        return pd.read_csv(save_path)
+        df_preds = pd.read_csv(save_path)
+        # Parse probabilities
+        df_preds["res_probs_base"] = df_preds["res_probs_base"].apply(ast.literal_eval)
+        df_preds["res_probs_modified"] = df_preds["res_probs_modified"].apply(ast.literal_eval)
+        # Parse choices
+        df_preds["choices"] = df_preds["choices"].apply(ast.literal_eval)
+        return df_preds
 
     # Get all predictions
     save_path_regex = os.path.join(
@@ -149,11 +155,11 @@ def pair_responses(split, overwrite=False):
             df_preds["epoch"] = -1
         # Parse fine-tuning
         if "_gd-" in base_model_name:
-            df_preds["finetuned"] = "gd"
+            df_preds["strategy"] = "gd"
         elif "_ga-" in base_model_name:
-            df_preds["finetuned"] = "ga"
+            df_preds["strategy"] = "ga"
         else:
-            df_preds["finetuned"] = "none"
+            df_preds["strategy"] = "none"
         # Parse probabilities
         df_preds["res_probs"] = df_preds["res_probs"].apply(ast.literal_eval)
         # Parse choices
@@ -179,7 +185,7 @@ def pair_responses(split, overwrite=False):
         df_base = name_to_base[model_name]
         df_modified = name_to_modified[model_name]
         # Separate out identical columns
-        shared_cols = ["prompt", "choices", "finetuned", "epoch"]
+        shared_cols = ["prompt", "choices", "strategy", "epoch"]
         df_shared = df_base[["idx"] + shared_cols]
         df_base = df_base.drop(columns=shared_cols)
         df_modified = df_modified.drop(columns=shared_cols)
@@ -227,29 +233,65 @@ def pair_responses(split, overwrite=False):
     # Save paired data
     df_paired.to_csv(save_path, index=False)
 
-    # Flipping by social group
-    group_cols = ["finetuned", "epoch", "social_group"]
-    df_prop = df_paired.groupby(group_cols)["response_flipped"].mean().reset_index()
-
-    # Pivot the table
-    pivot_df = df_prop.pivot_table(
-        index=["finetuned", "social_group"],
-        columns="epoch",
-        values="response_flipped"
-    )
-    pivot_df = pivot_df.rename_axis(columns="epoch").reset_index()
-
-    # Flipping by uncertainty bin
-    group_cols = ["finetuned", "epoch", "uncertainty_bin_base"]
-    df_prop = df_paired.groupby(group_cols)["response_flipped"].mean().reset_index()
-    pivot_df = df_prop.pivot_table(
-        index=["finetuned", "uncertainty_bin_base"],
-        columns="epoch",
-        values="response_flipped"
-    )
-    pivot_df = pivot_df.rename_axis(columns="epoch").reset_index()
-
     return df_paired
+
+
+def investigate_flipping():
+    """
+    Check how response flipping distributions were affected by SimPO, followed
+    by quantization.
+    """
+    # Get paired (pre/post-quantization) responses for before and after SimPO
+    df_paired = pair_responses("unseen_test")
+    df_paired = df_paired[df_paired["epoch"].isin([-1, 5])]
+
+    # Compute entropy before/after SimPO for unquantized model
+    df_entropy_base = compute_agg_by_group(
+        df_paired,
+        group_col="social_group",
+        value_col="res_probs_entropy_base",
+    ).rename(columns={
+        "before": "entropy-pre_SimPO-pre_RTN",
+        "after": "entropy-post_SimPO-pre_RTN",
+    })
+
+    # Compute entropy before/after SimPO for quantized model
+    df_entropy_modified = compute_agg_by_group(
+        df_paired,
+        group_col="social_group",
+        value_col="res_probs_entropy_modified",
+    ).rename(columns={
+        "before": "entropy-pre_SimPO-post_RTN",
+        "after": "entropy-post_SimPO-post_RTN",
+    })
+
+    # Merge entropy dataframes
+    df_entropy = pd.merge(
+        df_entropy_base, df_entropy_modified,
+        on=["social_group", "strategy"]
+    ).set_index(["social_group", "strategy"]).round(3)
+
+    # Compute entropy before/after SimPO for quantized model
+    # NOTE: Observation. Groups that weren't flipping much before SimPO
+    #       actually flipped more post-SimPO + quantization!
+    df_flipping_by_group = compute_agg_by_group(
+        df_paired,
+        group_col="social_group",
+        value_col="response_flipped",
+    ).rename(columns={
+        "before": "flipping-pre_SimPO",
+        "after": "flipping-post_SimPO",
+    }).set_index(["social_group", "strategy"]).round(3)
+
+    # Compute entropy before/after SimPO for quantized model
+    df_flipping_by_uncertainty = compute_agg_by_group(
+        df_paired,
+        group_col="uncertainty_bin_base",
+        value_col="response_flipped",
+    ).rename(columns={
+        "before": "flipping-pre_SimPO",
+        "after": "flipping-post_SimPO",
+    }).set_index(["uncertainty_bin_base", "strategy"]).round(3)
 
 
 ################################################################################
@@ -292,6 +334,69 @@ def compute_entropy(values, base=2):
     return -np.sum(values * np.log(values) / np.log(base))
 
 
+def compute_agg_by_group(
+        df_paired,
+        group_col="social_group",
+        value_col="response_flipped",
+        agg_func="mean",
+    ):
+    """
+    Aggregate some value column by group
+
+    Parameters
+    ----------
+    df_paired : pd.DataFrame
+        Table of paired responses (before/after quantization)
+    group_col : str, optional
+        Column to group by. Default is "social_group".
+    value_col : str, optional
+        Column to aggregate. Default is "response_flipped".
+    agg_func : str, optional
+        Aggregation function to use. Default is "mean".
+
+    Note
+    ----
+    Only considers the baseline (none) and finetuned (ga/gd) models at the last
+    epoch (5) versus before training (-1).
+
+    Returns
+    -------
+    pd.DataFrame
+        Aggregated DataFrame
+    """
+    # Check average change in by group column
+    group_cols = ["strategy", "epoch", group_col]
+    df_agg = df_paired.groupby(group_cols)[value_col].agg(agg_func).reset_index()
+    df_pivot = df_agg.pivot_table(
+        index=["strategy", group_col],
+        columns="epoch",
+        values=value_col
+    )
+    df_pivot = df_pivot.rename_axis(columns="epoch").reset_index()
+
+    # Split into baseline (none) and finetuned (ga/gd)
+    df_baseline = df_pivot[df_pivot["strategy"]=="none"].drop(columns=["strategy", 5])
+    df_baseline = df_baseline.rename(columns={-1: "before"})
+    df_finetuned = df_pivot[df_pivot["strategy"].isin(["ga","gd"])].drop(columns=[-1])
+    df_finetuned = df_finetuned.rename(columns={5: "after"})
+
+    # Merge baseline with finetuned on group
+    # NOTE: This is so the agg. metric column for the original model +
+    #       SimPO-tuned model are side by side
+    df_merged = df_baseline.merge(df_finetuned, on=group_col)
+
+    # Reorder columns
+    df_merged = df_merged[[group_col, "strategy", "before", "after"]]
+
+    # Add difference column
+    df_merged["diff"] = df_merged["after"] - df_merged["before"]
+
+    return df_merged
+
+
+################################################################################
+#                                User Interface                                #
+################################################################################
 if __name__ == "__main__":
     from fire import Fire
     Fire()
