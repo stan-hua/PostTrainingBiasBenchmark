@@ -12,6 +12,7 @@ import os
 import re
 
 # Non-standard libraries
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from glob import glob
@@ -130,13 +131,15 @@ def pair_responses(split, overwrite=False):
     # Early return, if evaluation already exists
     if not overwrite and os.path.exists(save_path):
         print(f"Evaluation already exists at `{save_path}`! Skipping evaluation...")
-        df_preds = pd.read_csv(save_path)
+        df_paired = pd.read_csv(save_path)
         # Parse probabilities
-        df_preds["res_probs_base"] = df_preds["res_probs_base"].apply(ast.literal_eval)
-        df_preds["res_probs_modified"] = df_preds["res_probs_modified"].apply(ast.literal_eval)
+        prob_cols = ["res_probs", "res_probs_unnorm"]
+        for suffix in ["_base", "_modified"]:
+            for col in prob_cols:
+                df_paired[col+suffix] = df_paired[col+suffix].apply(ast.literal_eval)
         # Parse choices
-        df_preds["choices"] = df_preds["choices"].apply(ast.literal_eval)
-        return df_preds
+        df_paired["choices"] = df_paired["choices"].apply(ast.literal_eval)
+        return df_paired
 
     # Get all predictions
     save_path_regex = os.path.join(
@@ -164,7 +167,9 @@ def pair_responses(split, overwrite=False):
         else:
             df_preds["strategy"] = "none"
         # Parse probabilities
-        df_preds["res_probs"] = df_preds["res_probs"].apply(ast.literal_eval)
+        prob_cols = ["res_probs", "res_probs_unnorm"]
+        for col in prob_cols:
+            df_preds[col] = df_preds[col].apply(ast.literal_eval)
         # Parse choices
         df_preds["choices"] = df_preds["choices"].apply(ast.literal_eval)
         # Compute uncertainty (entropy) in unquantized versus quantized
@@ -230,8 +235,20 @@ def pair_responses(split, overwrite=False):
 
     # Create bins for uncertainty
     df_paired["uncertainty_bin_base"] = pd.cut(
-        df_paired["res_probs_entropy_base"], 5,
+        df_paired["res_probs_entropy_base"],
+        bins=[0, 0.2, 0.4, 0.6, 0.8, 1.0],
+        include_lowest=True,
     )
+
+    # Get unnormalized probability of chosen response
+    for suffix in ["_base", "_modified"]:
+        df_paired[f"res_probs_unnorm_chosen{suffix}"] = df_paired[f"res_probs_unnorm{suffix}"].map(max)
+        # Create bins based on geometric mean probability of chosen response
+        df_paired[f"chosen_geom_prob_bin{suffix}"] = pd.cut(
+            df_paired[f"res_probs_unnorm_chosen{suffix}"],
+            bins=[0, 0.0001, 0.001, 0.01, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0],
+            include_lowest=True,
+        )
 
     # Save paired data
     df_paired.to_csv(save_path, index=False)
@@ -239,31 +256,39 @@ def pair_responses(split, overwrite=False):
     return df_paired
 
 
+# Fig. 6a and 6b
 def investigate_flipping():
     """
     Check how response flipping distributions were affected by SimPO, followed
     by quantization.
     """
-    # Get paired (pre/post-quantization) responses for before and after SimPO
-    df_paired = pair_responses("train")
-    df_paired = df_paired[df_paired["epoch"].isin([-1, 5])]
+    last_epoch = 3
 
-    # Compute entropy before/after SimPO for unquantized model
+    # Get paired (pre/post-quantization) responses for before and after SimPO
+    df_paired = pair_responses("train", overwrite=True)
+    df_paired = df_paired[df_paired["epoch"].isin([-1, last_epoch])]
+
+    ############################################################################
+    #                          Change in Entropy                               #
+    ############################################################################
+    # Compute pre-quantization entropy before/after SimPO
     df_entropy_base = compute_agg_by_group(
         df_paired,
         group_col="social_group",
         value_col="res_probs_entropy_base",
+        last_epoch=last_epoch,
     ).rename(columns={
         "before": "entropy-pre_SimPO-pre_RTN",
         "after": "entropy-post_SimPO-pre_RTN",
         "diff": "entropy_diff_from_SimPO-pre_RTN",
     })
 
-    # Compute entropy before/after SimPO for quantized model
+    # Compute post-quantization entropy before/after SimPO
     df_entropy_modified = compute_agg_by_group(
         df_paired,
         group_col="social_group",
         value_col="res_probs_entropy_modified",
+        last_epoch=last_epoch,
     ).rename(columns={
         "before": "entropy-pre_SimPO-post_RTN",
         "after": "entropy-post_SimPO-post_RTN",
@@ -278,14 +303,11 @@ def investigate_flipping():
 
     # Compute how much RTN affected entropy change due to SimPO
     df_entropy["entropy_diff"] = df_entropy["entropy-post_SimPO-post_RTN"] - df_entropy["entropy-pre_SimPO-pre_RTN"]
-    df_entropy[["entropy_diff", "entropy_diff_from_SimPO-pre_RTN", "entropy_diff_from_SimPO-post_RTN"]]
+    df_entropy[["entropy_diff", "entropy_diff_from_SimPO-pre_RTN"]]
 
-    # TODO: Directly compute difference in entropy between pre-RTN and post-RTN for the same pre/post-SimPO
-
-    # TODO: Compute percentage recovery
-
-    # TODO: Understand flipping
-
+    ############################################################################
+    #                          Response Flipping                               #
+    ############################################################################
     # Compute entropy before/after SimPO for quantized model
     # NOTE: Observation. Groups that weren't flipping much before SimPO
     #       actually flipped more post-SimPO + quantization!
@@ -293,6 +315,7 @@ def investigate_flipping():
         df_paired,
         group_col="social_group",
         value_col="response_flipped",
+        last_epoch=last_epoch,
     ).rename(columns={
         "before": "flipping-pre_SimPO",
         "after": "flipping-post_SimPO",
@@ -304,11 +327,41 @@ def investigate_flipping():
         df_paired,
         group_col="uncertainty_bin_base",
         value_col="response_flipped",
+        last_epoch=last_epoch,
     ).rename(columns={
         "before": "flipping-pre_SimPO",
         "after": "flipping-post_SimPO",
     }).set_index(["uncertainty_bin_base", "strategy"]).round(3)
 
+    # TODO: Compute response flipping by magnitude of geom token probability of
+    #       chosen response
+    df_flipping_by_geom_mean = compute_agg_by_group(
+        df_paired,
+        group_col="chosen_geom_prob_bin_base",
+        value_col="response_flipped",
+        last_epoch=last_epoch,
+    ).rename(columns={
+        "before": "flipping-pre_SimPO",
+        "after": "flipping-post_SimPO",
+    }).set_index(["chosen_geom_prob_bin_base", "strategy"]).round(3)
+
+    # TODO: Compute change in avg token probability for initial response
+    df_paired["res_choice_idx_base"] = df_paired["res_probs_unnorm_base"].map(np.argmax)
+    df_paired["change_in_initial_choice_geom_prob"] = df_paired.apply(
+        lambda row: row["res_probs_unnorm_modified"][row["res_choice_idx_base"]] - row["res_probs_unnorm_base"][row["res_choice_idx_base"]],
+        axis=1
+    )
+
+    # Check change in avg token probability by flipping
+    df_paired.groupby("is_biased_base")["change_in_initial_choice_geom_prob"].mean()
+
+    # Get 
+    pd.cut((df_paired["res_probs_unnorm_chosen_modified"] - df_paired["res_probs_unnorm_chosen_base"]), 10).value_counts()
+    positive_mask = (df_paired["res_probs_unnorm_chosen_modified"] - df_paired["res_probs_unnorm_chosen_base"]) > 0.2
+    df_paired.loc[positive_mask, "strategy"]
+
+    # Check avg token probability for biased vs. unbiased responses
+    df_paired.groupby("is_biased_modified")["res_probs_unnorm_chosen_modified"].mean()
 
     ############################################################################
     #                               Figures                                    #
@@ -340,7 +393,9 @@ def investigate_flipping():
         },
     }
 
-    # Plot 1. SimPo/EntropyMax affect uncertainty
+    ############################################################################
+    #             Plot 1. SimPo/EntropyMax affect uncertainty                  #
+    ############################################################################
     viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
     for idx, action in enumerate(style_map.keys()):
         plot_kwargs = {}
@@ -367,6 +422,69 @@ def investigate_flipping():
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, "fig_a-entropy.svg"))
     plt.close()
+
+    ############################################################################
+    #              Plot 2. Flipping vs. Change in Uncertainty                  #
+    ############################################################################
+    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+
+    # Join pre vs. post SimPO rows
+    df_paired_w_simpo = rejoin_pre_vs_post_simpo(df_paired)
+
+    # Compute difference in response flipping rates
+    df_paired_w_simpo["entropy_diff-from_SimPO"] = df_paired_w_simpo["res_probs_entropy_base-post_PO"] - df_paired_w_simpo["res_probs_entropy_base-pre_PO"]
+    df_paired_w_simpo_sorted = df_paired_w_simpo.sort_values(by="entropy_diff-from_SimPO")
+    post = df_paired_w_simpo_sorted["response_flipped-post_PO"].rolling(250, center=True).mean()
+    pre  = df_paired_w_simpo_sorted["response_flipped-pre_PO"].rolling(250, center=True).mean()
+    df_paired_w_simpo_sorted["response_flipped_rate"] = 100 * (post - pre)
+
+    # Plot
+    viz_utils.numplot(
+        df_paired_w_simpo_sorted,
+        plot_type="line", linewidth=8, color="#6E82B5",
+        x="entropy_diff-from_SimPO",
+        y="response_flipped_rate",
+        x_lim=[-0.8, 0.8],
+        y_lim=[-40, 40],
+        ylabel="Change in Response Flipping (%)",
+        xlabel="Change in Entropy",
+        save_dir=save_dir,
+        save_fname="fig_b-flipping_rate_by_entropy_change.svg",
+    )
+
+    ############################################################################
+    #            Plot 3. Geometric Mean Prob vs. Flipping Ratio                #
+    ############################################################################
+    viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
+
+    # Get paired data without preference tuning
+    accum_data = []
+    for split in ["train", "test", "unseen_test"]:
+        df_curr = pair_responses(split)
+        df_curr = df_curr[df_curr["strategy"] == "none"]
+        accum_data.append(df_curr)
+
+    # Compute rolling average of flipping rate
+    df_filtered = pd.concat(accum_data, ignore_index=True)
+    df_sorted = df_filtered.sort_values(by="res_probs_unnorm_chosen_base").copy()
+    df_sorted["response_flipped_rate"] = 100 * df_sorted["response_flipped"].rolling(250, center=True).mean()
+
+    # Plot
+    viz_utils.numplot(
+        df_sorted,
+        plot_type="line", linewidth=8, color="#C78E72",
+        x="res_probs_unnorm_chosen_base",
+        y="response_flipped_rate",
+        x_lim=[1e-3, 1],
+        y_lim=[0, 30],
+        ylabel="Rate of Response Flipping (%)",
+        xlabel="Avg. Token Prob.",
+    )
+    plt.xscale("log", base=10)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "fig_c-geom_token_prob.svg"))
+    plt.close()
+
 
 
 ################################################################################
@@ -409,11 +527,40 @@ def compute_entropy(values, base=2):
     return -np.sum(values * np.log(values) / np.log(base))
 
 
+def rejoin_pre_vs_post_simpo(df_paired):
+    """
+    Split into pre vs. post SimPO rows, then rejoin on idx
+
+    Parameters
+    ----------
+    df_paired : pd.DataFrame
+        Table of paired responses (before/after quantization)
+
+    Returns
+    -------
+    pd.DataFrame
+        Merged DataFrame with pre vs. post SimPO columns side by side
+    """
+    # Split into pre vs. post SimPO
+    df_pre_simpo = df_paired[df_paired["epoch"] == -1]
+    df_post_simpo = df_paired[df_paired["epoch"] > -1]
+    # Merge on idx
+    df_merged = pd.merge(
+        df_pre_simpo,
+        df_post_simpo,
+        on="idx",
+        suffixes=("-pre_PO", "-post_PO"),
+    )
+    return df_merged
+
+
 def compute_agg_by_group(
         df_paired,
         group_col="social_group",
         value_col="response_flipped",
         agg_func="mean",
+        initial_epoch=-1,
+        last_epoch=5,
     ):
     """
     Aggregate some value column by group
@@ -428,6 +575,10 @@ def compute_agg_by_group(
         Column to aggregate. Default is "response_flipped".
     agg_func : str, optional
         Aggregation function to use. Default is "mean".
+    initial_epoch : int, optional
+        Initial epoch to consider. Default is -1. -1 indicates before training.
+    last_epoch : int, optional
+        Last epoch to consider. Default is 5.
 
     Note
     ----
@@ -450,10 +601,10 @@ def compute_agg_by_group(
     df_pivot = df_pivot.rename_axis(columns="epoch").reset_index()
 
     # Split into baseline (none) and finetuned (ga/gd)
-    df_baseline = df_pivot[df_pivot["strategy"]=="none"].drop(columns=["strategy", 5])
-    df_baseline = df_baseline.rename(columns={-1: "before"})
-    df_finetuned = df_pivot[df_pivot["strategy"].isin(["ga","gd"])].drop(columns=[-1])
-    df_finetuned = df_finetuned.rename(columns={5: "after"})
+    df_baseline = df_pivot[df_pivot["strategy"]=="none"].drop(columns=["strategy", last_epoch])
+    df_baseline = df_baseline.rename(columns={initial_epoch: "before"})
+    df_finetuned = df_pivot[df_pivot["strategy"].isin(["ga","gd"])].drop(columns=[initial_epoch])
+    df_finetuned = df_finetuned.rename(columns={last_epoch: "after"})
 
     # Merge baseline with finetuned on group
     # NOTE: This is so the agg. metric column for the original model +
