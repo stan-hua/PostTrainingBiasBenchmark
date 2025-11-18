@@ -85,6 +85,7 @@ OPEN_DATASET_NAMES=(
 )
 
 for DATASET_NAME in "${OPEN_DATASET_NAMES[@]}"; do
+    pixi run -e analysis \
     python -m scripts.analysis cache_open_dataset_tests $DATASET_NAME;
 done
 
@@ -93,36 +94,38 @@ done
 ################################################################################
 #                                   Results                                    #
 ################################################################################
-# # Figure 2.
-# python -m scripts.analysis change_in_uncertainty
 
-# # # Figure 3
-python -m scripts.analysis change_in_agg_metrics
+# Define all analysis tasks
+tasks=(
+    # Figure 2.
+    change_in_uncertainty
+    # Figure 3
+    change_in_agg_metrics
+    # Figure 4a&b
+    factors_related_to_behavior_flipping
+    # Figure 4c
+    reranking_changes_due_to_quantization
+    # Figure 5
+    asymmetric_impact_questions
+    asymmetric_impact_bbq
+    asymmetric_impact_group_by_dataset
 
-# # # Figure 4a&b
-python -m scripts.analysis factors_related_to_behavior_flipping
+    # Supp Figure.
+    change_in_text_patterns
+    # Supp Figure.
+    change_in_text_bias
+    # Supp Table 1.
+    change_in_agg_metrics_int8
+    # Supp Table.
+    change_in_response_flipping
+    # Supp. Table.
+    change_in_text_bias_fmt10k
+    change_in_text_bias_biaslens
+)
 
-# # Figure 4c
-python -m scripts.analysis reranking_changes_due_to_quantization
-
-# # Figure 5
-python -m scripts.analysis asymmetric_impact_questions
-python -m scripts.analysis asymmetric_impact_bbq
-python -m scripts.analysis asymmetric_impact_group_by_dataset
-
-# # Supp Figure.
-# python -m scripts.analysis change_in_text_patterns
-
-# # Supp Figure.
-# python -m scripts.analysis change_in_text_bias
-
-
-# # Supp Table 1.
-# python -m scripts.analysis change_in_agg_metrics_int8
-
-# # Supp Table.
-# python -m scripts.analysis change_in_response_flipping
-
-# # Supp. Table.
-# python -m scripts.analysis change_in_text_bias_fmt10k
-# python -m scripts.analysis change_in_text_bias_biaslens
+# Loop through tasks
+for task in "${tasks[@]}"; do
+  echo "Running $task..."
+  pixi run -e analysis \
+  python -m scripts.analysis "$task"
+done

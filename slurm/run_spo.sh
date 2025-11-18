@@ -1,17 +1,18 @@
 #!/bin/bash -l
 #SBATCH --job-name=run_spo                    # Job name
 #SBATCH --account=fc_chenlab
-#SBATCH --partition=savio3_gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 
+# --partition=savio3_gpu
 # --cpus-per-task=8
 # --gres=gpu:A40:1
 # --qos=a40_gpu3_normal
 
-#SBATCH --gres=gpu:GTX2080TI:1
+#SBATCH --partition=savio4_gpu
+#SBATCH --gres=gpu:A5000:1
 #SBATCH --cpus-per-task=4
-#SBATCH --qos=gtx2080_gpu3_normal
+#SBATCH --qos=a5k_gpu4_normal
 
 #SBATCH --time=05:00:00
 #SBATCH --mem=32GB
@@ -41,7 +42,7 @@ DIR_OUTPUT_MODELS="$DIR_OUTPUTS/models"
 BASE_MODEL="Qwen/Qwen2.5-0.5B-Instruct"
 
 # Flag to overwrite existing results
-OVERWRITE=True
+OVERWRITE=False
 
 ################################################################################
 #                               Fine-Tune on BBQ                               #
@@ -103,22 +104,22 @@ OVERWRITE=True
 ################################################################################
 #                             Perform Predictions                              #
 ################################################################################
-# Predict with original model
-for split in "train" "test" "unseen_test"; do
-    # Oringal model
-    pixi run -e vllm python -m scripts.causality.evaluate infer \
-        --model_path_or_name $BASE_MODEL \
-        --split $split \
-        --overwrite=$OVERWRITE
+# # Predict with original model
+# for split in "train" "test" "unseen_test"; do
+#     # Oringal model
+#     pixi run -e vllm python -m scripts.causality.evaluate infer \
+#         --model_path_or_name $BASE_MODEL \
+#         --split $split \
+#         --overwrite=$OVERWRITE
 
-    # Quantized original model
-    # NOTE: Quantized model is stored on HuggingFace.
-    #       To use local model, change HF_DATA_USERNAME to DIR_OUTPUT_MODELS
-    pixi run -e vllm python -m scripts.causality.evaluate infer \
-        --model_path_or_name $HF_DATA_USERNAME/Qwen2.5-0.5B-Instruct-LC-RTN-W4A16 \
-        --split $split \
-        --overwrite=$OVERWRITE
-done
+#     # Quantized original model
+#     # NOTE: Quantized model is stored on HuggingFace.
+#     #       To use local model, change HF_DATA_USERNAME to DIR_OUTPUT_MODELS
+#     pixi run -e vllm python -m scripts.causality.evaluate infer \
+#         --model_path_or_name $HF_DATA_USERNAME/Qwen2.5-0.5B-Instruct-LC-RTN-W4A16 \
+#         --split $split \
+#         --overwrite=$OVERWRITE
+# done
 
 # For each gradient ascent/descent
 for grad_type in "gd" "ga"; do
