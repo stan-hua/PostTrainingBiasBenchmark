@@ -1943,17 +1943,12 @@ def asymmetric_impact_bbq(min_n=50, overwrite=False):
         # Change biased label
         df_bbq["is_biased_base"] = df_bbq["choice_label_base"] != "uncertain"
         df_bbq["is_biased_modified"] = df_bbq["choice_label_modified"] != "uncertain"
+        df_bbq["Bias_Flipped"] = df_bbq["is_biased_base"] != df_bbq["is_biased_modified"]
 
         # Direction of bias flipping
         map_direction = {
             (False, True): "unbiased_to_biased",
             (True, False): "biased_to_unbiased",
-            ("uncertain", "unbiased"): "uncertain_to_unbiased",
-            ("uncertain", "biased"): "uncertain_to_biased",
-            ("biased", "unbiased"): "biased_to_unbiased",
-            ("unbiased", "biased"): "unbiased_to_biased",
-            ("biased", "uncertain"): "biased_to_uncertain",
-            ("unbiased", "uncertain"): "unbiased_to_uncertain",
         }
         df_bbq["flip_direction"] = df_bbq.apply(
             lambda row: map_direction.get((row["is_biased_base"], row["is_biased_modified"])),
@@ -2054,7 +2049,7 @@ def asymmetric_impact_bbq(min_n=50, overwrite=False):
             color=bar_colors[1],
             y="stereotyped_group",
             x="perc_bias_flipped",
-            x_lim=[0, 50],
+            x_lim=[0, 25],
             ax=ax,
         )
         # Plot Unbiased to Biased
@@ -2064,7 +2059,7 @@ def asymmetric_impact_bbq(min_n=50, overwrite=False):
             color=bar_colors[0],
             y="stereotyped_group",
             x="U->B",
-            x_lim=[0, 50],
+            x_lim=[0, 25],
             ax=ax,
             **plot_kwargs,
         )
