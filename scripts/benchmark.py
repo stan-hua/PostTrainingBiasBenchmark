@@ -495,7 +495,7 @@ def extract_model_metadata_from_name(model_name):
     # NOTE: Choose longest matching base model name
     curr_base_model = None
     for base_model in instruct_models + non_instruct_models:
-        if base_model in model_name (and curr_base_model is None or len(base_model) > len(curr_base_model)):
+        if base_model in model_name and (curr_base_model is None or len(base_model) > len(curr_base_model)):
             accum_metadata["base_model"] = curr_base_model = base_model
     assert curr_base_model is not None, f"[Extract Model Metadata] Failed to find base model for: {model_name}!"
 
