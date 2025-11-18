@@ -256,7 +256,7 @@ def pair_responses(split, overwrite=False):
     return df_paired
 
 
-# Fig. 6a and 6b
+# Fig. 6a, 6b and 6c
 def investigate_flipping():
     """
     Check how response flipping distributions were affected by SimPO, followed
@@ -265,7 +265,7 @@ def investigate_flipping():
     last_epoch = 3
 
     # Get paired (pre/post-quantization) responses for before and after SimPO
-    df_paired = pair_responses("train", overwrite=True)
+    df_paired = pair_responses("train")
     df_paired = df_paired[df_paired["epoch"].isin([-1, last_epoch])]
 
     ############################################################################
@@ -429,6 +429,8 @@ def investigate_flipping():
     viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
 
     # Join pre vs. post SimPO rows
+    df_paired = pair_responses("test")
+    df_paired = df_paired[df_paired["epoch"].isin([-1, last_epoch])]
     df_paired_w_simpo = rejoin_pre_vs_post_simpo(df_paired)
 
     # Compute difference in response flipping rates
@@ -444,8 +446,8 @@ def investigate_flipping():
         plot_type="line", linewidth=8, color="#6E82B5",
         x="entropy_diff-from_SimPO",
         y="response_flipped_rate",
-        x_lim=[-0.8, 0.8],
-        y_lim=[-40, 40],
+        x_lim=[-1, 1],
+        y_lim=[-45, 45],
         ylabel="Change in Response Flipping (%)",
         xlabel="Change in Entropy",
         save_dir=save_dir,
@@ -453,7 +455,36 @@ def investigate_flipping():
     )
 
     ############################################################################
-    #            Plot 3. Geometric Mean Prob vs. Flipping Ratio                #
+    #        Plot 3. Causal Effect of Shifting Geometric Mean Prob             #
+    ############################################################################
+    # Join pre vs. post SimPO rows
+    df_paired = pair_responses("test")
+    df_paired = df_paired[df_paired["epoch"].isin([-1, last_epoch])]
+    df_paired_w_simpo = rejoin_pre_vs_post_simpo(df_paired)
+
+    # Compute difference in response flipping rates
+    df_paired_w_simpo["chosen_geom_prob_diff-from_SimPO"] = df_paired_w_simpo["res_probs_unnorm_chosen_base-post_PO"] - df_paired_w_simpo["res_probs_unnorm_chosen_base-pre_PO"]
+    df_paired_w_simpo_sorted = df_paired_w_simpo.sort_values(by="chosen_geom_prob_diff-from_SimPO")
+    post = df_paired_w_simpo_sorted["response_flipped-post_PO"].rolling(250, center=True).mean()
+    pre  = df_paired_w_simpo_sorted["response_flipped-pre_PO"].rolling(250, center=True).mean()
+    df_paired_w_simpo_sorted["response_flipped_rate"] = 100 * (post - pre)
+
+    # Plot
+    viz_utils.numplot(
+        df_paired_w_simpo_sorted,
+        plot_type="line", linewidth=8, color="#C78E72",
+        x="chosen_geom_prob_diff-from_SimPO",
+        y="response_flipped_rate",
+        ylabel="Change in Response Flipping (%)",
+        xlabel="Change in Avg. Token Prob.",
+    )
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "fig_c-change_in_avg_token_prob.svg"))
+    plt.close()
+
+
+    ############################################################################
+    #            Supp Plot. Geometric Mean Prob vs. Flipping Ratio             #
     ############################################################################
     viz_utils.set_theme(tick_scale=3, figsize=(10, 10))
 
@@ -482,8 +513,9 @@ def investigate_flipping():
     )
     plt.xscale("log", base=10)
     plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, "fig_c-geom_token_prob.svg"))
+    plt.savefig(os.path.join(save_dir, "supp_fig-geom_token_prob.svg"))
     plt.close()
+
 
 
 
