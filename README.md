@@ -1,8 +1,4 @@
 
-<p align="center">
-  <img src="assets/figure.png" alt="Paper Overview" style="width: 15%; display: block; margin: auto;">
-</p>
-
 <h1 align="center"> Uncertainty Drives Social Bias in Quantized Large Language Models </h1>
 
 
@@ -12,14 +8,16 @@
 </p>
 
 
-This repository contains code to replicate the experiments in the paper [Uncertainty Drives Social Bias in Quantized Large Language Models](https://arxiv.org/abs/2405.01535) by [Stanley Hua](https://stan-hua.github.io/), [Sanae Lotfi](https://sanaelotfi.github.io/) and [Irene Chen](https://irenechen.net/).
+This repository contains code to replicate the experiments performed in the paper [Uncertainty Drives Social Bias in Quantized Large Language Models](https://arxiv.org/abs/2405.01535) by [Stanley Hua](https://stan-hua.github.io/), [Sanae Lotfi](https://sanaelotfi.github.io/) and [Irene Chen](https://irenechen.net/).
 
-We perform a large-scale study on social bias in quantized large language models. On 14 curated datasets, we evaluate 5 quantization methods (RTN/AWQ/GPTQ/SmoothQuant) on 10 open-source models (LLaMA/Qwen/Mistral) ranging from 0.5B to 14B parameters. We find that uncertain responses are the most susceptible to changing post-quantization, social groups experience this asymmetrically, and response flipping can occur largely despite no change in dataset-aggregate metrics. Unsurprisingly, we find that 8-bit quantization leads to lesser bias changes than 4-bit quantization, and that quantization disrupts prior rankings on bias. However, we surprisingly find that no evidence that larger models (14B) are particularly more safe to this phenomenon than 0.5B models.
+We perform a large-scale study on social bias in quantized large language models. On 14 curated datasets, we evaluate 5 quantization methods (RTN/AWQ/GPTQ/SmoothQuant) on 10 open-source models (LLaMA/Qwen/Mistral) ranging from 0.5B to 14B parameters. We find that uncertain responses are the most susceptible to changing post-quantization, social groups experience this asymmetrically, and response flipping can occur largely despite no change in dataset-aggregate metrics. Unsurprisingly, we find that 8-bit quantization leads to lesser bias changes than 4-bit quantization, and that quantization disrupts prior rankings on bias. On the other hand, we found that no evidence that larger models (14B) are particularly more safe to this phenomenon than 0.5B models.
 
-We hope our work challenges the research community to think carefully about deploying quantized LLMs and to consider the differential impacts these subtle choices make on different members in society. Furthermore, we hope that by example, our work can serve as inspiration to improve standards and rigor in benchmarking efforts for measuring social bias in LLMs.
+We hope our work challenges the research community to think carefully about deploying quantized LLMs and to consider the varied impacts these subtle choices make on different members in society. Furthermore, we hope that by example, our work can serve as inspiration to improve standards and rigor in benchmarking efforts for measuring social bias in LLMs.
 
+<p align="center">
+  <img src="assets/figure.png" alt="Paper Overview" style="width: 80%; display: block; margin: auto;">
+</p>
 
----
 
 ## 💴 About the Data
 
@@ -27,7 +25,7 @@ We hope our work challenges the research community to think carefully about depl
 
 In this repository, we repackage the following datasets:
 
-|  Style | Definition |       **Dataset**       | **Questions** |
+|  Style | Capability |       **Dataset**       | **Questions** |
 |:------:|:----------:|:-----------------------:|:-------------:|
 | Closed |      1     |     CEB-Recognition     |     1,600     |
 | Closed |      1     |        CEB-Jigsaw       |     1,500     |
@@ -49,7 +47,7 @@ In **closed-ended datasets**, a response is selected among multiple fixed option
 
 ## 🔧 Quickstart
 
-**(Automatic) Installation via Pixi:**
+1. **Package Installation via Pixi**
 ```shell
 # Get repository
 git clone https://github.com/stan-hua/PostTrainingBiasBenchmark
@@ -68,50 +66,46 @@ curl -fsSL https://pixi.sh/install.sh | sh
 pixi shell -e vllm
 ```
 
-**(OpenAI) Registering your OpenAI key**
-```shell
-# Add to ~/.bashrc file (or to your .envrc)
-echo 'export OPENAI_KEY="[ENTER HERE]"' >> ~/.bashrc
+2. **(Optional) Registering your OpenAI key**
 
-# Reload shell
+> **NOTE**: Most of our code is designed to run models locally. One exception is the use of OpenAI models to extract social groups from datasets. 
+```shell
+echo 'export OPENAI_KEY="[ENTER HERE]"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
 ## 🏃 How to Run
 
-**Generate LLM responses**
+1. **Generate LLM responses**
 ```shell
 # Activate environment
 pixi shell -e vllm
 
 # Option 1. In shell
-# MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
 MODEL_NICKNAME="llama3.1-8b-instruct"    # shorthand defined in config.py / MODEL_INFO
 python -m scripts.benchmark generate ${MODEL_NICKNAME};
 
 # Option 2. In a SLURM batch job
-# TODO: First, modify `slurm/generate.sh` to run the model specified
+# NOTE: Modify sbatch script to run specified models
 sbatch slurm/generate_responses.sh
 ```
 
 
-**Use LLaMA-Guard to evaluate safety of open-ended responses**
+2. **Use LLaMA-Guard to evaluate safety of open-ended responses**
 ```shell
 # Option 1. In shell
-# MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
 MODEL_NICKNAME="llama3.1-8b-instruct"    # shorthand defined in config.py / MODEL_INFO
 python -m scripts.benchmark bias_evaluate ${MODEL_NAME};
 
 # Option 2. In a SLURM batch job
-# TODO: First, modify `slurm/generate.sh` to run the model specified
+# NOTE: Modify sbatch script to evalute specified models
 sbatch slurm/evaluate_responses.sh
 ```
 
 
-**Reproduce paper figures and tables**
+3. **Reproduce paper figures and tables**
 ```shell
 # Option 1. In a SLURM batch job
-# TODO: First, modify `slurm/generate.sh` to run the model specified
 sbatch slurm/create_paper_figures.sh
 ```
 
@@ -119,7 +113,7 @@ sbatch slurm/create_paper_figures.sh
 
 To add a new model, please update `MODEL_INFO` in `config.py`.
 
-Example: "Meta-Llama-3.1-8B-Instruct-GPTQ-4bit"
+**Example**: "Meta-Llama-3.1-8B-Instruct-GPTQ-4bit"
 ```shell
 1. In `MODEL_INFO['model_group']`, append "llama3.1-8b-instruct"
 2. In `MODEL_INFO['model_path_to_name']`, provide mapping of HuggingFace / local path to a model shorthand.
@@ -149,6 +143,8 @@ If you find our work useful, please consider citing our paper!
 
 
 ## 🌲 About the repository
+
+To guide contributors, we provide 1-line explanations describing important folders in the repository.
 
 <!-- OPTIONAL: Create Repository Structure Automatically
 pip install rptree
