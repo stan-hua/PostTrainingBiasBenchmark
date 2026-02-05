@@ -1,14 +1,9 @@
 #!/bin/bash -l
 #SBATCH --job-name=paper                    # Job name
-#SBATCH --account=fc_chenlab
-#SBATCH --partition=savio4_htc
-#SBATCH --qos=savio_normal
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1                         # Number of nodes
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32                 # Number of CPU cores per TASK
-
-# --gres=gpu:NVIDIA_L40S:1
 #SBATCH --mem=16GB
 #SBATCH -o slurm/logs/slurm-paper-%j.out
 
@@ -20,9 +15,6 @@
 #                                 Environment                                  #
 ################################################################################
 # Load any necessary modules or activate your virtual environment here
-# Option 1. Using conda
-# conda activate fairbench
-# (Recommended) Option 2. Pixi
 pixi shell -e analysis
 
 # Configures vLLM to avoid multiprocessing issue
@@ -34,7 +26,7 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
 port=$(shuf -i 6000-9000 -n 1)
 echo $port
 
-# System prompt type ("no_sys_prompt", "really_1x", "really_2x", "really_3x", "really_4x")
+# System prompt type
 export SYSTEM_PROMPT_TYPE="no_sys_prompt"
 
 
@@ -42,20 +34,16 @@ export SYSTEM_PROMPT_TYPE="no_sys_prompt"
 #                          Discriminative Evaluation                           #
 ################################################################################
 CLOSED_DATASET_NAMES=(
-    # "CEB-Recognition-S"
-    # "CEB-Recognition-T"
-    # "CEB-Adult"
-    # "CEB-Credit"
-    # "CEB-Jigsaw"
-    # "BBQ"
-    # "BiasLens-Choices"
-    # "IAT"
-    # "SocialStigmaQA"
-    # "StereoSet-Intersentence"
-
-    # The following are deprecated:
-    # # "BiasLens-YesNo"
-    # # "StereoSet-Intrasentence"
+    "CEB-Recognition-S"
+    "CEB-Recognition-T"
+    "CEB-Adult"
+    "CEB-Credit"
+    "CEB-Jigsaw"
+    "BBQ"
+    "BiasLens-Choices"
+    "IAT"
+    "SocialStigmaQA"
+    "StereoSet-Intersentence"
 )
 
 for DATASET_NAME in "${CLOSED_DATASET_NAMES[@]}"; do
@@ -63,32 +51,22 @@ for DATASET_NAME in "${CLOSED_DATASET_NAMES[@]}"; do
 done
 
 
-# DiscrimEval
-# python -m scripts.analysis analyze_de
-
 ################################################################################
 #                            Generative Evaluation                             #
 ################################################################################
 OPEN_DATASET_NAMES=(
-    # "CEB-Continuation-S"
-    # "CEB-Continuation-T"
-    # "CEB-Conversation-S"
-    # "CEB-Conversation-T"
-    # "FMT10K-IM-S"
-    # "FMT10K-IM-T"
-    # "BiasLens-GenWhy"
-
-    # The following are deprecated:
-    # # "BOLD"
-    # # "DoNotAnswer-S"
-    # # "DoNotAnswer-T"
+    "CEB-Continuation-S"
+    "CEB-Continuation-T"
+    "CEB-Conversation-S"
+    "CEB-Conversation-T"
+    "FMT10K-IM-S"
+    "FMT10K-IM-T"
+    "BiasLens-GenWhy"
 )
 
 for DATASET_NAME in "${OPEN_DATASET_NAMES[@]}"; do
-    pixi run -e analysis \
     python -m scripts.analysis cache_open_dataset_tests $DATASET_NAME;
 done
-
 
 
 ################################################################################
