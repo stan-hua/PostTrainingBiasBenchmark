@@ -19,12 +19,7 @@ We hope our work challenges the research community to think carefully about depl
 </p>
 
 
-## 💴 About the Data
-
-**Data Description**:
-
-In this repository, we repackage the following datasets:
-
+## 💴 Datasets
 |  Style | Capability |       **Dataset**       | **Questions** |
 |:------:|:----------:|:-----------------------:|:-------------:|
 | Closed |      1     |     CEB-Recognition     |     1,600     |
