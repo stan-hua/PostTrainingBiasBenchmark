@@ -14,7 +14,9 @@ Prerequisites:
 
 # Standard libraries
 import os
+import tempfile
 import warnings
+from pathlib import Path
 
 # Non-standard libraries
 import numpy as np
@@ -286,6 +288,42 @@ def proportion_ci(p, n, alpha=0.05):
     z = 1.96  # for 95% CI
     se = np.sqrt(p * (1 - p) / n)
     return (max(0.0, p - z * se), min(1.0, p + z * se))
+
+
+def atomic_pandas_to_csv(
+    df: pd.DataFrame,
+    save_path: str | os.PathLike,
+    **kwargs,
+) -> None:
+    """
+    Atomically write `df` to `save_path` as CSV.
+    """
+    save_path = Path(save_path)
+    directory = save_path.parent
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        newline="",
+        dir=directory,
+        prefix=f".{save_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as f:
+        temp_path = Path(f.name)
+        try:
+            df.to_csv(f, **kwargs)
+            f.flush()
+            os.fsync(f.fileno())
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
+
+    # File is now closed — safe to rename on all platforms.
+    try:
+        os.replace(temp_path, save_path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 ################################################################################

@@ -13,13 +13,11 @@ import os
 import random
 import re
 import sys
-import tempfile
 import traceback
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 from glob import glob
-from pathlib import Path
 
 # Non-standard libraries
 import matplotlib.patches as mpatches
@@ -5723,42 +5721,6 @@ def compute_rouge_l(reference_text, candidate_text):
         "rouge_l-f1": scores.fmeasure,
     }
     return ret
-
-
-def atomic_pandas_to_csv(
-    df: pd.DataFrame,
-    save_path: str | os.PathLike,
-    **kwargs,
-) -> None:
-    """
-    Atomically write `df` to `save_path` as CSV.
-    """
-    save_path = Path(save_path)
-    directory = save_path.parent
-
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        newline="",
-        dir=directory,
-        prefix=f".{save_path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as f:
-        temp_path = Path(f.name)
-        try:
-            df.to_csv(f, **kwargs)
-            f.flush()
-            os.fsync(f.fileno())
-        except BaseException:
-            temp_path.unlink(missing_ok=True)
-            raise
-
-    # File is now closed — safe to rename on all platforms.
-    try:
-        os.replace(temp_path, save_path)
-    except BaseException:
-        temp_path.unlink(missing_ok=True)
-        raise
 
 
 ################################################################################
