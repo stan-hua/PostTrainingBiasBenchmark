@@ -88,7 +88,6 @@ class OpenTextEvaluator:
         save_fname : str, optional
             Filename to save within save directory
         """
-        assert save_dir, "Please pass a valid `save_dir` to save evaluation results!"
         assert model_name in MODEL_NAME_TO_PATH, f"`model_name` must be one of {list(MODEL_NAME_TO_PATH.keys())}"
 
         self.save_dir = save_dir
@@ -131,7 +130,7 @@ class OpenTextEvaluator:
                 self.judge = judge
 
 
-    def save_progress(self, data, filename=None, **save_kwargs):
+    def save_progress(self, data, filename=None, save_dir=None, **save_kwargs):
         """
         Save evaluation progress to a JSON file.
 
@@ -139,6 +138,10 @@ class OpenTextEvaluator:
             data: Data to be saved.
             filename (str): Name of the file for saving the data.
         """
+        if save_dir:
+            self.save_dir = save_dir
+        assert self.save_dir, "Please pass a valid `save_dir` to save evaluation results!"
+
         filename = filename or self.save_fname
         os.makedirs(self.save_dir, exist_ok=True)
         save_path = os.path.join(self.save_dir, filename)
@@ -148,6 +151,7 @@ class OpenTextEvaluator:
     def evaluate(
         self, data,
         save_fname=None,
+        save_dir=None,
         prompt_col=None,
         llm_input_col=None,
         llm_response_col=None,
@@ -162,6 +166,8 @@ class OpenTextEvaluator:
             evaluate
         save_fname : str, optional
             Filename for saving or resuming progress.
+        save_dir : str, optional
+            Directory for saving or resuming progress.
         prompt_col : str, optional
             Key containing initial prompt that was used to generate response
         llm_input_col : str, optional
@@ -176,6 +182,7 @@ class OpenTextEvaluator:
             The evaluated data.
         """
         save_fname = save_fname or self.save_fname
+        self.save_dir = save_dir or self.save_dir
 
         # Modify keys
         self.prompt_col = prompt_col or self.prompt_col
