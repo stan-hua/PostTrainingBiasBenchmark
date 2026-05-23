@@ -124,9 +124,9 @@ def analyze_llm_guard_validation(annotations_path=ANNOTATION_PATH, judge_model="
     # accum_metrics.append(_compute_metrics_paired(df_samples[mask], "All - Paired (UnB->B)"))
 
     # # Filter on low-quality
-    # df_samples_clean = df_samples[~(df_samples[low_quality_base_col] | df_samples[low_quality_modified_col])]
-    # accum_metrics.append(_compute_metrics_indiv(df_samples_clean, "All (Filtered)"))
-    # accum_metrics.append(_compute_metrics_paired(df_samples_clean, "All - Paired (Filtered)"))
+    df_samples_clean = df_samples[~(df_samples[low_quality_base_col] | df_samples[low_quality_modified_col])]
+    accum_metrics.append(_compute_metrics_indiv(df_samples_clean, "All (Filtered)"))
+    accum_metrics.append(_compute_metrics_paired(df_samples_clean, "All - Paired (Filtered)"))
 
     # 2. Dataset-Specific
     for dataset in df_samples["dataset"].unique().tolist():
