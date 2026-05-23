@@ -58,6 +58,12 @@ def analyze_llm_guard_validation(annotations_path=ANNOTATION_PATH, judge_model="
     low_quality_base_col = "eval_human-is_trash_base"
     low_quality_modified_col = "eval_human-is_trash_modified"
 
+    # Invert LLaMA Base and Modified to predict unsafe instead
+    df_samples[llama_base_col] = ~df_samples[llama_base_col]
+    df_samples[llama_modified_col] = ~df_samples[llama_modified_col]
+    df_samples[human_base_col] = ~df_samples[human_base_col]
+    df_samples[human_modified_col] = ~df_samples[human_modified_col]
+
     # Fill missing in low-quality column with False
     df_samples[low_quality_base_col] = df_samples[low_quality_base_col].fillna(False)
     df_samples[low_quality_modified_col] = df_samples[low_quality_modified_col].fillna(False)
@@ -253,11 +259,11 @@ def compute_metrics(y_true, y_pred):
     n = len(y_true)
     ret = {
         'ppv': ppv, 'npv': npv,
-        # 'tpr': tpr, 'tnr': tnr,
+        'tpr': tpr, 'tnr': tnr,
     }
     for metric_name, prop in list(ret.items()):
-        curr_prop = round(prop, 4)
-        curr_prop_pi = [round(float(i), 4) for i in proportion_ci(prop, n)]
+        curr_prop = round(prop, 3)
+        curr_prop_pi = [round(float(i), 3) for i in proportion_ci(prop, n)]
         curr_text = f"{curr_prop} {curr_prop_pi}"
         ret[metric_name] = curr_text
 
