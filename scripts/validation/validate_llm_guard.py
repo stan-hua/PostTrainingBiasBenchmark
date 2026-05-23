@@ -4,7 +4,7 @@ validate_llm_guard.py
 Description: Scripts used to validate the use of LLM Guard
 
 Usage:
-    `pixi run -e vllm validate_llm_guard.py perform_llm_guard_validation --judge_model [llama|qwen]`
+    `pixi run -e vllm python -m scripts.validation.validate_llm_guard perform_llm_guard_validation --judge_model [llama|qwen]`
 
 Prerequisites:
     1. Run analysis.py / `sample_open_dataset_for_llama_guard_validation`

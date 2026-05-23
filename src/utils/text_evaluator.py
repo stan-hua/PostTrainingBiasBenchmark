@@ -14,7 +14,7 @@ import torch
 from tqdm import tqdm
 
 # Custom libraries
-from src.utils import json_utils, text_eval_utils
+from src.utils import json_utils
 from src.utils.llm_gen_wrapper import LLMGeneration
 
 
@@ -258,6 +258,9 @@ class OpenTextEvaluator:
         data : list of dict, optional
             Each dict is a question to be evaluated
         """
+        # Lazy import
+        from src.utils import text_eval_utils
+
         # Early return, if no data
         if not data:
             return False
@@ -301,6 +304,9 @@ class OpenTextEvaluator:
         data : list of dict, optional
             Each dict is a question to be evaluated
         """
+        # Lazy import
+        from src.utils import text_eval_utils
+
         # Early return, if no data
         if not data:
             return False
