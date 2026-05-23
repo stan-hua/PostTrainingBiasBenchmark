@@ -169,7 +169,7 @@ def perform_llm_guard_validation(save_path=ANNOTATION_PATH, judge_model="qwen"):
         # Prepare prompt and responses
         curr_responses = df_paired[res_col].tolist()
         accum_data = []
-        for idx, curr_response in curr_responses:
+        for idx, curr_response in enumerate(curr_responses):
             curr_data = {"prompt": prompts[idx], "res": curr_response}
             accum_data.append(curr_data)
 

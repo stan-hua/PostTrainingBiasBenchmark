@@ -247,6 +247,7 @@ MODEL_INFO = {
     # Mapping of model name/path to shorthand
     "model_path_to_name": {
         "meta-llama/Llama-Guard-3-8B": "meta-llama/Llama-Guard-3-8B",
+        "Qwen/Qwen3Guard-Gen-8B": "Qwen/Qwen3Guard-Gen-8B",
 
         ########################################################################
         #                               LLaMA 2                                #
