@@ -806,31 +806,6 @@ def get_data_directory(dataset_name):
     return dir_data
 
 
-def proportion_ci(p, n, alpha=0.05):
-    """
-    Approximate confidence interval for proportion using normal distribution
-
-    Parameters
-    ----------
-    p : float
-        Probability
-    n : float
-        Number of samples
-    alpha : float, optional
-        Significance level, by default 0.05
-
-    Returns
-    -------
-    tuple
-        (i) Lower bound
-        (ii) Upper bound
-    """
-    if n == 0 or np.isnan(p):
-        return (np.nan, np.nan)
-    z = 1.96  # for 95% CI
-    se = np.sqrt(p * (1 - p) / n)
-    return (max(0.0, p - z * se), min(1.0, p + z * se))
-
 ################################################################################
 #                                User Interface                                #
 ################################################################################
