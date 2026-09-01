@@ -1,14 +1,14 @@
 
-<h1 align="center"> Uncertainty Drives Social Bias in Quantized Large Language Models </h1>
+<h1 align="center"> Investigating Social Bias Changes in Quantized Language Models </h1>
 
 
 <!-- OPTIONAL: Badges with Hyperlinks -->
 <p align="center">
-  <a href="[OPT FILL: Path/link to paper]"><img src="https://img.shields.io/badge/arXiv-2405.01535-b31b1b.svg" alt="arXiv"></a>
+  <a href="https://arxiv.org/abs/2602.06181"><img src="https://img.shields.io/badge/arXiv-2405.01535-b31b1b.svg" alt="arXiv"></a>
 </p>
 
 
-This repository contains code to replicate the experiments performed in the paper [Uncertainty Drives Social Bias in Quantized Large Language Models](https://arxiv.org/abs/2405.01535) by [Stanley Hua](https://stan-hua.github.io/), [Sanae Lotfi](https://sanaelotfi.github.io/) and [Irene Chen](https://irenechen.net/).
+This repository contains code to replicate the experiments performed in the paper [Investigating Social Bias Changes in Quantized Language Models](https://arxiv.org/abs/2602.06181) by [Stanley Hua](https://stan-hua.github.io/), [Sanae Lotfi](https://sanaelotfi.github.io/) and [Irene Chen](https://irenechen.net/).
 
 We perform a large-scale study on social bias in quantized large language models. On 13 curated datasets, we evaluate 5 quantization methods (RTN/AWQ/GPTQ/SmoothQuant) on 10 open-source models (LLaMA/Qwen/Mistral) ranging from 0.5B to 14B parameters. We find that uncertain responses are the most susceptible to changing post-quantization, social groups experience this asymmetrically, and response flipping can occur largely despite no change in dataset-aggregate metrics. Unsurprisingly, we find that 8-bit quantization leads to lesser bias changes than 4-bit quantization, and that quantization disrupts prior rankings on bias. On the other hand, we found that no evidence that larger (14B) models are particularly more safe to this phenomenon than smaller (0.5B) models.
 
@@ -128,12 +128,13 @@ as the starting point for this repository.
 If you find our work useful, please consider citing our paper!
 
 ```bibtex
-@article{YourName,
-  title={Your Title},
-  author={Your team},
-  journal={Location},
-  year={Year}
+@inproceedings{hua2026investigatingsocialbiaschanges,
+  title={Investigating Social Bias Changes in Quantized Language Models},
+  author={Hua, Stanley Z. and Lotfi, Sanae and Chen, Irene Y.},
+  booktitle={Proceedings of the Conference on Language Modeling (COLM)},
+  year={2026},
 }
+
 ```
 
 
